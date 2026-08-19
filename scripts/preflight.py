@@ -39,7 +39,7 @@ def run_check(name: str, fn: Callable[[], dict]) -> tuple[dict, bool]:
 def main() -> int:
     out_dir = Path("outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
-    neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j").strip() or "neo4j"
+    neo4j_database = os.getenv("NEO4J_DATABASE", "").strip()
     groq_fast_model = os.getenv("GROQ_FAST_MODEL", DEFAULT_GROQ_MODEL).strip()
     judge_provider = os.getenv("JUDGE_PROVIDER", "openai").strip().lower()
     judge_model = os.getenv("JUDGE_MODEL", "").strip()
@@ -58,22 +58,26 @@ def main() -> int:
 
     def check_neo4j() -> dict:
         from neo4j import GraphDatabase
+
+        user = required_env("NEO4J_USER")
+        database = required_env("NEO4J_DATABASE")
         driver = GraphDatabase.driver(
             required_env("NEO4J_URI"),
-            auth=(required_env("NEO4J_USER"), required_env("NEO4J_PASSWORD")),
+            auth=(user, required_env("NEO4J_PASSWORD")),
         )
         try:
             driver.verify_connectivity()
-            with driver.session(database=neo4j_database) as session:
+            with driver.session(database=database) as session:
                 value = session.run("RETURN 1 AS ok").single()["ok"]
             if value != 1:
                 raise RuntimeError("Neo4j sanity query returned unexpected result")
-            return {"database": neo4j_database}
+            return {"database": database, "username_present": bool(user)}
         finally:
             driver.close()
 
     def check_huggingface() -> dict:
         from datasets import load_dataset
+
         ds = load_dataset(
             "HackerNoon/tech-company-news-data-dump",
             split="train",
@@ -89,7 +93,8 @@ def main() -> int:
 
     def check_groq() -> dict:
         from groq import Groq
-        client = Groq(api_key=required_env("GROQ_API_KEY"), timeout=30.0, max_retries=0)
+
+        client = Groq(api_key=required_env("GROQ_API_KEY"), timeout=45.0, max_retries=0)
         available = {m.id for m in client.models.list().data}
         if groq_fast_model not in available:
             raise RuntimeError(
@@ -98,12 +103,11 @@ def main() -> int:
             )
         response = client.chat.completions.create(
             model=groq_fast_model,
-            messages=[
-                {"role": "system", "content": "Return exactly OK."},
-                {"role": "user", "content": "Health check"},
-            ],
+            messages=[{"role": "user", "content": "Reply with exactly OK."}],
+            reasoning_effort="low",
+            reasoning_format="hidden",
             temperature=0.0,
-            max_tokens=4,
+            max_completion_tokens=128,
         )
         text = (response.choices[0].message.content or "").strip()
         if not text:
@@ -111,6 +115,7 @@ def main() -> int:
         usage = getattr(response, "usage", None)
         return {
             "model": groq_fast_model,
+            "response_nonempty": True,
             "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
         }
 
