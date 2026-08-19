@@ -105,6 +105,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Unit gate
+        run: python -m pytest -q
+
       - name: Preflight external services
         if: steps.mode.outputs.mode == 'preflight'
         run: python scripts/preflight.py
