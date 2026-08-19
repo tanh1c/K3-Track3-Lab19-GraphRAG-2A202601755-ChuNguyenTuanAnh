@@ -1,116 +1,286 @@
-# Lab 19 Report — GraphRAG vs Flat RAG
+# Báo cáo Lab 19 — GraphRAG so với Flat RAG
 
-# Technical Defense — Lab 19 GraphRAG vs Flat RAG
-
-## 1. Coreference sai ở tình huống nào?
-False coreference xảy ra khi đại từ/generic mention có nhiều antecedent hợp lệ trong cùng chunk. Pipeline dùng conservative trigger và giữ nguyên văn bản khi mơ hồ; unresolved mentions được checkpoint để audit. Điều này ưu tiên precision vì một false coreference có thể tạo false edge lan truyền trong graph.
-
-## 2. Entity-resolution threshold là bao nhiêu, vì sao?
-Vector candidate threshold là **0.90**. Sau ANN candidate search, lexical/type guard vẫn bắt buộc. Mức này ưu tiên precision; false merge nguy hiểm hơn false split trong knowledge graph dùng cho reasoning.
-
-## 3. Candidate similarity cao nhưng không nên merge?
-Ví dụ audit thực nghiệm: **Ivy Tech Community College - Columbus ↔ Ivy Tech Community College (sim=0.899)**. Guard đặc biệt chặn company-vs-product prefix và person chỉ trùng họ.
-
-## 4. Top 3 super-node và degree?
-- 1. Microsoft (Company), degree=9
-- 2. artificial intelligence (Technology), degree=7
-- 3. ServiceNow (Company), degree=5
-
-## 5. Vì sao ưu tiên edge mới nhất có thể đúng/sai?
-Đúng cho câu hỏi trạng thái hiện tại và kiểm soát context explosion; sai với câu hỏi lịch sử vì cạnh cũ có thể là evidence quyết định. Vì vậy policy chỉ kích hoạt khi degree >100, cap 50, đồng thời giữ provenance/date để failure analysis.
-
-## 6. Flat RAG thắng nhóm nào?
-Kết quả theo group nằm trong `outputs/graphrag_vs_flatrag_summary.csv`. Ca có Graph-minus-Flat thấp nhất là **G5000-44 (multi-hop)**, delta quality=-3.00.
-
-## 7. GraphRAG thắng nhóm nào?
-Ca có Graph-minus-Flat cao nhất là **G5000-08 (multi-hop)**, delta quality=3.33. Graph traversal hữu ích khi evidence phải nối qua nhiều entity/document.
-
-## 8. Latency/token trade-off?
-Flat latency trung bình=2.69s; GraphRAG=5.40s. Flat token trung bình=949.8; GraphRAG=1770.0. GraphRAG trả giá bằng traversal + graph context để tăng khả năng multi-hop.
-
-## 9. AI Coding Agent đề xuất gì mà không dùng, vì sao?
-Không dùng pairwise cosine O(N²) cho near-dedup/entity resolution. Near-dedup dùng SimHash+LSH; entity resolution dùng FAISS ANN + lexical guard. Không dùng golden metadata để chọn extraction chunks vì đó là benchmark leakage.
-
-## 10. Scale lên toàn bộ dataset: bottleneck đầu tiên là gì?
-LLM extraction/rate limit là bottleneck đầu tiên, sau đó mới tới embedding/indexing và graph fan-out. Hướng scale: durable queue + checkpoint, async workers theo quota, ANN/blocking cho resolution, batch UNWIND, partition/community summaries và cache retrieval.
-
-## Empirical metrics
-- **Comprehensiveness:** Flat=3.64, Graph=3.88
-- **Faithfulness:** Flat=3.68, Graph=3.88
-- **Multi-hop reasoning:** Flat=3.44, Graph=3.74
-- Graph nodes=418, edges=268, invalid provenance=0.
-
+**Sinh viên:** Chu Nguyễn Tuấn Anh  
+**MSSV:** 2A202601755
 
 ---
 
-# Failure Analysis — Lab 19
+# Phần 1 — Thuyết minh kỹ thuật
 
-## Case 1 — GraphRAG advantage
-- **Question:** G5000-08 — Which external organizations are connected to ServiceNow's generative-AI efforts in the selected data, and what distinct role does each play?
-- **Flat answer:** ServiceNow's generative-AI efforts involve partnerships with two key external organizations, each playing a distinct role:
+## 1. Coreference có thể sai trong tình huống nào?
 
-1. **NVIDIA**: Partnered with ServiceNow to develop powerful enterprise-grade generative AI capabilities aimed at transforming business processes through faster, more intelligent workflow automation [chunk_id=https://www.tmcnet.com/usubmit/2023/05/17/9816504.htm::c0000].
+Lỗi đồng tham chiếu có thể xảy ra khi một đại từ hoặc một cụm từ tham chiếu chung có nhiều tiền đề hợp lệ trong cùng một đoạn văn bản. Pipeline sử dụng cơ chế kích hoạt thận trọng: chỉ gọi LLM khi phát hiện dấu hiệu cần xử lý coreference, đồng thời giữ nguyên văn bản nếu ngữ cảnh còn mơ hồ. Các mention chưa giải quyết được vẫn được checkpoint để phục vụ kiểm tra và truy vết.
 
-2. **Deloitte**: Expanded its alliance with ServiceNow to integrate Now Assist generative AI capabilities into next-generation managed services. Deloitte focuses on helping customers manage ongoing operational and technology needs strategically, enhancing employee and enterprise experiences [chunk_id=https://www.businesswire.com/news/home/20231025715145/en/Deloitte-and-ServiceNow-Expand-Alliance-to-Integrate-Now-Assist-Generative-AI-Capabilities-With-Next-Generation-Managed-Services::c0000].
+Thiết kế này ưu tiên **độ chính xác (precision)** vì một coreference sai có thể tạo ra cạnh sai trong knowledge graph và khiến lỗi lan truyền sang các bước entity resolution, retrieval và reasoning.
 
-No other external organizations connected to ServiceNow's generative AI efforts are mentioned in the provided data.
-- **Graph answer:** ServiceNow's generative-AI efforts are connected to the following external organizations, each playing a distinct role:
+## 2. Ngưỡng Entity Resolution là bao nhiêu và vì sao?
 
-1. **NVIDIA**: Partnered with ServiceNow to develop powerful enterprise-grade generative AI capabilities aimed at transforming business processes through faster, more intelligent workflow automation [source_row=746].
+Ngưỡng ứng viên theo vector similarity là **0.90**. Sau bước tìm ứng viên gần nhất bằng ANN, pipeline vẫn bắt buộc kiểm tra thêm lexical guard và type guard trước khi merge.
 
-2. **Accenture**: Partnered alongside ServiceNow and NVIDIA to accelerate generative AI adoption for enterprises, indicating a collaborative role in implementation and scaling of generative AI solutions [source_row=648].
+Ngưỡng cao được chọn nhằm ưu tiên precision. Trong knowledge graph dùng cho reasoning, một **false merge** thường nguy hiểm hơn một **false split**, vì merge sai có thể làm nhiều thực thể khác nhau bị gộp thành một node và ảnh hưởng tới nhiều truy vấn phía sau.
 
-3. **Deloitte**: Expanded its alliance with ServiceNow to integrate Now Assist generative AI capabilities with next-generation managed services, focusing on helping customers manage ongoing operational and technology needs using generative AI [source_row=411].
+## 3. Ví dụ similarity cao nhưng không nên merge
 
-These partnerships highlight NVIDIA's role in technology development, Accenture's role in enterprise adoption acceleration, and Deloitte's role in integrating generative AI into managed services for operational support.
-- **Quality delta:** 3.33
-- **Root cause interpretation:** Flat retrieval ranks chunks independently; GraphRAG can connect canonical entities and provenance-bearing edges before combining vector evidence.
+Một ví dụ thực tế từ audit:
 
-## Case 2 — GraphRAG failure / weakest relative case
-- **Question:** G5000-44 — What two distinct partner ecosystems connect L&T Technology Services to advanced infrastructure in 2023: one for urban-rail 5G and one for OT security?
-- **Flat answer:** In 2023, L&T Technology Services connected to advanced infrastructure through two distinct partner ecosystems: 
+**Ivy Tech Community College - Columbus ↔ Ivy Tech Community College (similarity = 0.899)**
 
-1. For urban-rail 5G, L&T Technology Services partnered with Qualcomm and Thales to enable 5G private networks in urban railways [chunk_id=http://www.itnewsonline.com/BusinessWire/LT-Technology-Services-and-Qualcomm-Selected-by-Thales-for-Enabling-5G-Private-Networks-in-Urban-Railways/30401].
+Dù similarity cao, pipeline vẫn không merge nếu không vượt qua các guard cần thiết. Cơ chế guard đặc biệt giúp ngăn các trường hợp như company và product chỉ giống prefix, hoặc hai tên người chỉ trùng họ.
 
-2. For OT (Operational Technology) security, L&T Technology Services joined forces with Palo Alto Networks as an MSSP partner to offer comprehensive security platforms for OT and address industrial segments [chunk_id=https://finance.yahoo.com/news/l-t-technology-services-joins-083000328.html::c0000].
-- **Graph answer:** In 2023, L&T Technology Services connects to advanced infrastructure through two distinct partner ecosystems: 
+## 4. Ba node có degree cao nhất
 
-1. For urban-rail 5G, the partnership is implied through their acquisition of the Smart World & Communication (SWC) business of Larsen & Toubro Ltd (L&T), which likely supports advanced communication infrastructure [source_row=1007].
+1. **Microsoft** — loại `Company`, degree = **9**
+2. **artificial intelligence** — loại `Technology`, degree = **7**
+3. **ServiceNow** — loại `Company`, degree = **5**
 
-2. For OT (Operational Technology) security, L&T Technology Services partnered with Palo Alto Networks as an MSSP (Managed Security Service Provider) partner to offer comprehensive OT security platforms addressing industrial segments [source_row=471].
-- **Quality delta:** -3.00
-- **Likely root causes to audit:** missing extraction edge, imperfect seed/entity resolution, or super-node recency cap. `graph_route`, matched seeds and edge count are exported per question for tracing rather than guessing.
+Trong lần chạy full hiện tại chưa xuất hiện super-node thực sự theo ngưỡng `degree > 100`. Tuy nhiên pipeline vẫn có cơ chế bảo vệ: nếu degree vượt 100 thì chỉ lấy tối đa 50 cạnh gần nhất theo thời gian, đồng thời áp dụng global edge cap để tránh context explosion.
 
+## 5. Vì sao ưu tiên cạnh mới nhất có thể vừa đúng vừa sai?
+
+Ưu tiên cạnh mới nhất hợp lý với các câu hỏi về trạng thái hiện tại vì thông tin gần đây thường phản ánh trạng thái mới nhất của thực thể. Cách này cũng giúp hạn chế số lượng cạnh khi gặp node có degree lớn.
+
+Tuy nhiên với câu hỏi lịch sử, cạnh cũ có thể là bằng chứng quan trọng nhất. Vì vậy policy chỉ kích hoạt mạnh khi gặp super-node, đồng thời toàn bộ cạnh vẫn giữ provenance và ngày xuất bản để có thể truy vết khi phân tích lỗi.
+
+## 6. Flat RAG thắng ở trường hợp nào?
+
+Kết quả theo từng nhóm được lưu tại `outputs/graphrag_vs_flatrag_summary.csv`.
+
+Trường hợp GraphRAG kém hơn Flat RAG nhiều nhất là:
+
+- **Mã câu hỏi:** `G5000-44`
+- **Nhóm:** `multi-hop`
+- **Chênh lệch chất lượng Graph - Flat:** **-3.00**
+
+Điều này cho thấy GraphRAG không phải lúc nào cũng tốt hơn; nếu graph thiếu cạnh quan trọng hoặc entity seed chưa chính xác thì vector retrieval thuần có thể lấy được đoạn bằng chứng trực tiếp tốt hơn.
+
+## 7. GraphRAG thắng ở trường hợp nào?
+
+Trường hợp GraphRAG cải thiện nhiều nhất là:
+
+- **Mã câu hỏi:** `G5000-08`
+- **Nhóm:** `multi-hop`
+- **Chênh lệch chất lượng Graph - Flat:** **+3.33**
+
+Graph traversal đặc biệt hữu ích khi câu trả lời cần nối thông tin qua nhiều entity hoặc nhiều tài liệu khác nhau thay vì chỉ tìm một đoạn văn bản có độ tương đồng cao.
+
+## 8. Đánh đổi giữa latency và token
+
+Kết quả trung bình trên Golden Dataset:
+
+- **Flat RAG latency:** 2.69 giây
+- **GraphRAG latency:** 5.40 giây
+- **Flat RAG token:** 949.8 token
+- **GraphRAG token:** 1770.0 token
+
+Như vậy GraphRAG tốn nhiều thời gian và token hơn do phải thực hiện entity matching, graph traversal và kết hợp thêm graph context. Đổi lại, nó cải thiện khả năng tổng hợp thông tin đa bước và liên tài liệu.
+
+## 9. AI Coding Agent từng đề xuất gì nhưng không được sử dụng, và vì sao?
+
+Pipeline không sử dụng pairwise cosine similarity theo kiểu **O(N²)** cho near-dedup hoặc entity resolution vì cách này không phù hợp khi dữ liệu tăng lớn.
+
+Thay vào đó:
+
+- Near-dedup sử dụng **SimHash + LSH**.
+- Entity resolution sử dụng **FAISS ANN** để tạo candidate, sau đó mới dùng lexical/type guard để quyết định merge.
+- Golden Dataset không được sử dụng để lựa chọn extraction chunks vì điều đó sẽ gây **benchmark leakage**.
+
+AI Coding Agent được sử dụng để tăng tốc boilerplate, viết test và hỗ trợ triển khai, nhưng các quyết định kiến trúc và acceptance criteria vẫn được kiểm soát bằng test, CI và các invariant của pipeline.
+
+## 10. Nếu scale lên toàn bộ dataset thì bottleneck đầu tiên là gì?
+
+Bottleneck đầu tiên là **LLM extraction và giới hạn API/rate limit**. Sau đó mới tới embedding/indexing, entity resolution và graph fan-out.
+
+Hướng mở rộng phù hợp gồm:
+
+- hàng đợi bền vững và checkpoint/resume;
+- worker bất đồng bộ theo quota API;
+- ANN/blocking cho entity resolution;
+- batch `UNWIND` khi ghi Neo4j;
+- partition hoặc community summary;
+- cache retrieval và cache các kết quả LLM có thể tái sử dụng.
+
+## Kết quả thực nghiệm chính
+
+- **Tính đầy đủ (Comprehensiveness):** Flat = **3.64**, Graph = **3.88**
+- **Tính trung thực theo bằng chứng (Faithfulness):** Flat = **3.68**, Graph = **3.88**
+- **Khả năng suy luận đa bước (Multi-hop reasoning):** Flat = **3.44**, Graph = **3.74**
+- **Số node trong graph:** 418
+- **Số edge trong graph:** 268
+- **Số edge thiếu provenance:** 0
 
 ---
 
-# Reflection & Action Plan — ChuNguyenTuanAnh
+# Phần 2 — Phân tích các trường hợp thành công và thất bại
 
-## Lecture → code mapping
-| Concept | Implementation | Observation |
+## Trường hợp 1 — GraphRAG có lợi thế
+
+**Câu hỏi `G5000-08`:** Những tổ chức bên ngoài nào được kết nối với các nỗ lực generative AI của ServiceNow trong dữ liệu đã chọn, và mỗi tổ chức đóng vai trò gì?
+
+### Câu trả lời của Flat RAG
+
+Flat RAG xác định hai tổ chức chính:
+
+1. **NVIDIA:** hợp tác với ServiceNow để phát triển năng lực generative AI cấp doanh nghiệp nhằm hỗ trợ tự động hóa quy trình làm việc nhanh hơn và thông minh hơn.
+2. **Deloitte:** mở rộng liên minh với ServiceNow để tích hợp Now Assist vào các dịch vụ managed service thế hệ mới, hỗ trợ khách hàng xử lý nhu cầu vận hành và công nghệ.
+
+Flat RAG không tìm ra đầy đủ các tổ chức bên ngoài còn lại trong bằng chứng được cung cấp.
+
+### Câu trả lời của GraphRAG
+
+GraphRAG xác định được ba tổ chức và vai trò riêng biệt:
+
+1. **NVIDIA:** hợp tác với ServiceNow để phát triển năng lực generative AI cấp doanh nghiệp.
+2. **Accenture:** hợp tác cùng ServiceNow và NVIDIA để thúc đẩy việc ứng dụng generative AI trong doanh nghiệp, đóng vai trò hỗ trợ triển khai và mở rộng adoption.
+3. **Deloitte:** mở rộng liên minh với ServiceNow nhằm tích hợp Now Assist vào managed services phục vụ nhu cầu vận hành và công nghệ.
+
+### Đánh giá
+
+- **Chênh lệch chất lượng:** +3.33 cho GraphRAG.
+- **Nguyên nhân:** Flat RAG xếp hạng từng chunk độc lập, trong khi GraphRAG có thể nối các canonical entity và các cạnh có provenance trước khi kết hợp thêm bằng chứng vector. Điều này giúp GraphRAG tổng hợp được nhiều mối quan hệ liên quan hơn trong một câu hỏi multi-hop.
+
+## Trường hợp 2 — GraphRAG thất bại tương đối
+
+**Câu hỏi `G5000-44`:** Hai hệ sinh thái đối tác khác nhau nào kết nối L&T Technology Services với hạ tầng tiên tiến trong năm 2023: một hệ cho 5G đường sắt đô thị và một hệ cho bảo mật OT?
+
+### Câu trả lời của Flat RAG
+
+Flat RAG lấy được hai quan hệ phù hợp:
+
+1. Với **5G cho đường sắt đô thị**, L&T Technology Services hợp tác với **Qualcomm** và **Thales** để hỗ trợ mạng 5G private cho hệ thống đường sắt đô thị.
+2. Với **bảo mật OT**, L&T Technology Services hợp tác với **Palo Alto Networks** với vai trò MSSP để cung cấp nền tảng bảo mật OT cho các ngành công nghiệp.
+
+### Câu trả lời của GraphRAG
+
+GraphRAG xác định đúng quan hệ với **Palo Alto Networks** cho bảo mật OT, nhưng phần 5G đường sắt bị suy diễn từ một quan hệ acquisition với Smart World & Communication thay vì lấy đúng partnership với Qualcomm và Thales.
+
+### Đánh giá
+
+- **Chênh lệch chất lượng:** -3.00 cho GraphRAG.
+- **Các nguyên nhân cần kiểm tra:** thiếu cạnh extraction, entity seed chưa tối ưu hoặc retrieval không đi đúng nhánh quan hệ cần thiết.
+- Các trường `graph_route`, matched seeds và số lượng edge đều được export theo từng câu hỏi để có thể truy vết thay vì đoán nguyên nhân.
+
+---
+
+# Phần 3 — Reflection và kế hoạch cải tiến
+
+**Sinh viên:** Chu Nguyễn Tuấn Anh  
+**MSSV:** 2A202601755
+
+## Liên hệ nội dung bài học với phần triển khai
+
+| Khái niệm | Phần triển khai | Quan sát |
 |---|---|---|
-| Conservative coreference | `resolve_coreferences()` | LLM calls only for chunks with pronoun/generic-reference triggers; ambiguity remains auditable. |
-| Strict schema allowlist | `ALLOWED_NODE_TYPES`, `ALLOWED_RELATIONS` | Unsupported relation labels are rejected before ingestion. |
-| Entity resolution | `build_resolution_map()` | FAISS ANN is only candidate generation; lexical/type guard decides merge safety. |
-| Bulk ingestion | `Neo4jStore.bulk_insert_*()` | Uses `UNWIND` batches; no row-by-row network writes. |
-| Super-node mitigation | `GraphRetriever.retrieve()` | degree >100 is capped to at most 50 recent edges plus a global edge cap. |
-| Evaluation | `evaluate()` + `Judge` | Same generator family, golden reference and 3 judge dimensions expose quality/cost trade-offs. |
+| Coreference thận trọng | `resolve_coreferences()` | Chỉ gọi LLM với chunk có trigger đại từ/tham chiếu chung; trường hợp mơ hồ vẫn có thể audit. |
+| Allowlist schema nghiêm ngặt | `ALLOWED_NODE_TYPES`, `ALLOWED_RELATIONS` | Relation ngoài schema bị loại trước khi ingest. |
+| Entity Resolution | `build_resolution_map()` | FAISS ANN chỉ dùng để tìm candidate; lexical/type guard quyết định merge có an toàn hay không. |
+| Bulk ingestion | `Neo4jStore.bulk_insert_*()` | Dùng batch `UNWIND`, không ghi từng row qua network. |
+| Xử lý Super-node | `GraphRetriever.retrieve()` | Node có degree > 100 bị giới hạn tối đa 50 cạnh gần nhất và còn chịu global edge cap. |
+| Evaluation | `evaluate()` + `Judge` | Cùng một Golden Dataset và ba tiêu chí judge giúp đo rõ đánh đổi chất lượng/chi phí. |
 
-## Debugging lesson
-A deterministic near-dedup test exposed that hashing `title + body` missed syndicated copies whose title changed while body stayed the same. The fix fingerprints article body and keeps an audit table. CI also exposed duplicate GitHub Action triggers, which were separated into lightweight push CI versus sentinel-only integration runs.
+## Bài học từ quá trình debug
 
-## Action plan
-For a production knowledge assistant, keep provenance on every relation, namespace graph ingestion by dataset/version, gate entity merges with both semantic and lexical evidence, and add a self-correcting retrieval route before expanding graph radius. Community reports should serve global questions while local BFS handles entity-centric questions.
+Một test near-dedup deterministic cho thấy việc hash `title + body` có thể bỏ sót các bản sao được syndicate khi tiêu đề thay đổi nhưng phần nội dung chính gần như giống nhau. Pipeline được sửa để fingerprint phần nội dung bài viết và lưu audit table cho các quyết định near-dedup.
 
-## Bonus evidence
-- Near-duplicates removed: 5
-- Community reports built: 164
+CI cũng từng phát hiện workflow bị trigger trùng nhiều lần. Sau đó pipeline được tách thành:
 
-## Strict Bonus Verification
+- lightweight CI cho push thông thường;
+- integration workflow chỉ chạy khi sentinel được thay đổi có chủ đích.
 
-- Self-Correction / sufficiency_rate: before=0.250, after=1.000, delta=0.750
-- Self-Correction / mean_context_chars: before=2333.667, after=5517.500, delta=3183.833
-- Community Reports / llm_summary_rate: before=0.000, after=1.000, delta=1.000
-- Query router demo: local=2, global=2.
-- LLM self-correction sample=12; vector fallbacks=8; every row has a terminal stop condition.
-- Coreference spot-check exported to `outputs/coref_spotcheck.csv`.
+Cách này giảm việc chạy API không cần thiết và giúp quá trình thử nghiệm dễ kiểm soát hơn.
+
+## Kế hoạch cải tiến nếu đưa lên production
+
+Nếu phát triển thành một knowledge assistant production, các nguyên tắc cần giữ gồm:
+
+- lưu provenance trên mọi relation;
+- namespace dữ liệu graph theo dataset/version;
+- chỉ merge entity khi có cả semantic evidence và lexical/type evidence phù hợp;
+- dùng self-correcting retrieval trước khi mở rộng bán kính graph quá lớn;
+- dùng community reports cho câu hỏi mang tính toàn cục;
+- dùng local BFS cho câu hỏi tập trung vào entity cụ thể;
+- bổ sung cache, monitoring và cơ chế kiểm soát chi phí LLM.
+
+---
+
+# Phần 4 — Kiểm chứng Bonus
+
+## Bonus A — Low-level / High-level Retrieval
+
+Pipeline có cả hai tầng truy hồi:
+
+- **Low-level:** truy hồi theo entity và graph neighborhood cho câu hỏi cụ thể.
+- **High-level:** truy hồi theo community reports cho câu hỏi tổng quan trên toàn bộ corpus.
+
+Query router được kiểm chứng bằng demo:
+
+- Số query được route sang **local**: 2
+- Số query được route sang **global**: 2
+
+Evidence được lưu tại `outputs/retrieval_router_demo.csv`.
+
+## Bonus B — Global Search qua Community Reports
+
+Pipeline sử dụng fallback NetworkX với thuật toán `networkx.greedy_modularity_communities` để phát hiện cộng đồng trên graph, sau đó ghi `community_id` trở lại Neo4j bằng batch `UNWIND`.
+
+Kết quả full run:
+
+- **Số community:** 164
+- **Số community được LLM tóm tắt:** 164/164
+- **Tỷ lệ LLM summary:** 100%
+
+Các community report được dùng làm high-level context cho global search.
+
+## Bonus C — Self-Correction Graph Retrieval
+
+Self-correction triển khai đúng chuỗi:
+
+1. Truy hồi **hop 2**.
+2. LLM kiểm tra context đã đủ hay chưa.
+3. Nếu chưa đủ, mở rộng sang **hop 3**.
+4. LLM kiểm tra lại lần thứ hai.
+5. Nếu vẫn chưa đủ, thực hiện **vector fallback**.
+6. Mọi nhánh đều có **stop condition** rõ ràng.
+
+Kết quả kiểm chứng trên 12 câu bonus:
+
+- `hop2`: 3 câu
+- `hop3`: 1 câu
+- `hop3+vector`: 8 câu
+- Tỷ lệ context được LLM đánh giá đủ ở hop 2 ban đầu: **25%**
+- Tỷ lệ context đủ sau self-correction: **100%**
+- Mức cải thiện: **+75 điểm phần trăm**
+- Độ dài context trung bình: từ **2333.667** ký tự lên **5517.500** ký tự
+- Cả 12/12 trường hợp đều có terminal stop condition
+
+Evidence được lưu tại `outputs/self_correction_bonus_eval.csv` và `outputs/bonus_before_after.csv`.
+
+## Bonus Near-Dedup
+
+Near-dedup sử dụng **SimHash + LSH** thay vì so sánh pairwise O(N²).
+
+- **Số near-duplicate được loại:** 5
+
+Evidence được lưu tại `outputs/near_dedup_audit.csv`.
+
+---
+
+# Phần 5 — Tổng kết kết quả bài Lab
+
+Lần chạy full cuối cùng sử dụng chính sách **chỉ lấy 5.000 dòng đầu tiên** của nguồn dữ liệu theo thứ tự xác định, không sampling.
+
+Các chỉ số chính:
+
+- Dòng dữ liệu nguồn: **5.000**
+- Bài viết sau dedup: **2.114**
+- Chunk được index: **2.114**
+- Chunk được LLM extraction: **400**
+- Triple hợp lệ: **268**
+- Node trong Neo4j: **418**
+- Golden Dataset đã evaluate: **50/50**
+- Entity Resolution audit rows: **16**
+- Near-duplicate bị loại: **5**
+- Community reports: **164**
+- Edge thiếu provenance: **0**
+- Extraction error còn lại: **0**
+
+Toàn bộ kết quả chi tiết được lưu trong thư mục `outputs/`, báo cáo trong `reports/`, và notebook đã được chạy đầy đủ để phục vụ việc kiểm tra và chấm bài.
