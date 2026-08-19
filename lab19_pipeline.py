@@ -14,7 +14,7 @@ from typing import Iterable
 import pandas as pd
 
 from lab19_core import chunk_words, normalize_text, validate_provenance_dataframe
-from lab19_utils import FIRST_N_ROWS, select_stratified_indices, take_first_n_rows
+from lab19_utils import FIRST_N_ROWS, take_first_n_rows
 
 SOURCE_MAX_ROWS = FIRST_N_ROWS
 CHUNK_WORDS = 220
@@ -36,6 +36,20 @@ ALLOWED_RELATIONS = {
 _COREF_RE = re.compile(
     r"\b(?:it|they|them|their|he|him|his|she|her|hers|the company|the startup)\b",
     flags=re.IGNORECASE,
+)
+
+# Generic lexical signals derived only from the assignment relation schema.
+# They are deliberately query/golden-agnostic: the selector never sees benchmark
+# questions, reference answers, seed entities, evidence row IDs, or gold metadata.
+_RELATION_SIGNAL_PATTERNS = (
+    re.compile(r"\bacquir(?:e|es|ed|ing|er|ers|isition|isitions)\b", re.I),
+    re.compile(r"\bdevelop(?:s|ed|ing|er|ers|ment|ments)?\b", re.I),
+    re.compile(r"\binvest(?:s|ed|ing|ment|ments|or|ors)?\b", re.I),
+    re.compile(r"\bfound(?:s|ed|er|ers|ing)?\b", re.I),
+    re.compile(r"\bwork(?:s|ed|ing)?\s+(?:at|for)\b", re.I),
+    re.compile(r"\bpartner(?:s|ed|ing|ship|ships)?\b", re.I),
+    re.compile(r"\buses?\b|\busing\b|\bused\b", re.I),
+    re.compile(r"\blead(?:s|ing)?\b|\bled\b", re.I),
 )
 
 
@@ -154,16 +168,79 @@ def build_chunks(
     return pd.DataFrame(rows)
 
 
+def _relation_signal_score(text: object) -> int:
+    """Count schema-derived relation cues in a chunk.
+
+    Capping each pattern at two matches prevents repetitive prose from dominating
+    a coverage bin while still rewarding chunks that express multiple relation
+    types (for example, PARTNERED_WITH + INVESTED_IN).
+    """
+    normalized = normalize_text(text)
+    return sum(min(2, len(pattern.findall(normalized))) for pattern in _RELATION_SIGNAL_PATTERNS)
+
+
 def select_extraction_source(
     chunks_df: pd.DataFrame,
     *,
     limit: int = EXTRACTION_MAX_CHUNKS,
 ) -> pd.DataFrame:
-    """Pick a deterministic corpus-wide extraction subset without gold leakage."""
+    """Pick a deterministic, corpus-wide, relation-rich extraction subset.
+
+    The first and last chunks are always retained. The remaining corpus is split
+    into contiguous coverage bins; exactly one chunk is chosen from each bin.
+    Within a bin, generic relation cues derived from the assignment allowlist are
+    preferred. Ties choose the chunk nearest the bin center, then the lower index.
+
+    This improves graph yield without benchmark leakage: no golden question,
+    answer, evidence-row metadata, or query-specific entity is consulted.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
     if chunks_df.empty:
         return chunks_df.copy()
-    indices = select_stratified_indices(len(chunks_df), limit)
-    return chunks_df.iloc[indices].copy().reset_index(drop=True)
+    if "text" not in chunks_df.columns:
+        raise ValueError("chunks dataframe must contain text")
+
+    total = len(chunks_df)
+    if limit >= total:
+        return chunks_df.copy().reset_index(drop=True)
+    if limit == 1:
+        return chunks_df.iloc[[0]].copy().reset_index(drop=True)
+    if limit == 2:
+        return chunks_df.iloc[[0, total - 1]].copy().reset_index(drop=True)
+
+    selected = [0]
+    interior_slots = limit - 2
+    interior_count = total - 2
+
+    for slot in range(interior_slots):
+        # Partition indices 1..total-2 into non-overlapping contiguous bins.
+        start = 1 + (slot * interior_count) // interior_slots
+        end_exclusive = 1 + ((slot + 1) * interior_count) // interior_slots
+        if end_exclusive <= start:
+            end_exclusive = start + 1
+        candidates = list(range(start, min(end_exclusive, total - 1)))
+        if not candidates:
+            continue
+
+        center = (candidates[0] + candidates[-1]) / 2.0
+        best = min(
+            candidates,
+            key=lambda idx: (
+                -_relation_signal_score(chunks_df.iloc[idx]["text"]),
+                abs(idx - center),
+                idx,
+            ),
+        )
+        selected.append(best)
+
+    selected.append(total - 1)
+    selected = sorted(set(selected))
+    if len(selected) != limit:
+        raise AssertionError(
+            f"extraction coverage selector expected {limit} unique chunks, got {len(selected)}"
+        )
+    return chunks_df.iloc[selected].copy().reset_index(drop=True)
 
 
 def needs_coreference(text: str) -> bool:
