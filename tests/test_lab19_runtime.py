@@ -1,11 +1,29 @@
 import pandas as pd
 
 from lab19_models import DEFAULT_GROQ_MODEL
-from lab19_runtime import GroqRuntime, RunConfig, comparison_table
+from lab19_runtime import (
+    GroqRuntime,
+    RunConfig,
+    build_groq_request_options,
+    comparison_table,
+)
 
 
 def test_default_groq_model_uses_current_post_deprecation_replacement():
     assert DEFAULT_GROQ_MODEL == "openai/gpt-oss-20b"
+
+
+def test_gpt_oss_requests_disable_reasoning_output_and_use_low_effort():
+    options = build_groq_request_options("openai/gpt-oss-20b", max_tokens=64)
+    assert options["reasoning_effort"] == "low"
+    assert options["include_reasoning"] is False
+    assert options["max_completion_tokens"] == 64
+    assert "max_tokens" not in options
+
+
+def test_non_reasoning_model_request_keeps_only_completion_budget():
+    options = build_groq_request_options("some-non-reasoning-model", max_tokens=64)
+    assert options == {"max_completion_tokens": 64}
 
 
 def test_run_modes_keep_full_scope_but_reduce_only_expensive_smoke_work():
