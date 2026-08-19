@@ -1,9 +1,9 @@
 name: Lab19 CI
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - lab19/full-score-ci-bonus
     paths:
       - '**.py'
       - 'data/**'
@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lab19-ci-${{ github.event.pull_request.number || github.ref }}
+  group: lab19-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
