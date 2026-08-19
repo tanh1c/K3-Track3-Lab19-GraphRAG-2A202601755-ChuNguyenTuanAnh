@@ -71,6 +71,7 @@ def test_extraction_source_prefers_relation_rich_chunks_inside_coverage_bins():
                 "plain background text",
                 "plain background text",
                 "plain background text",
+                "plain background text",
                 "Microsoft partnered with Contoso and invested in its AI platform.",
                 "plain background text",
                 "plain background text",
@@ -78,12 +79,11 @@ def test_extraction_source_prefers_relation_rich_chunks_inside_coverage_bins():
                 "plain background text",
                 "plain background text",
                 "plain background text",
-                "plain background text",
             ],
         }
     )
     selected = select_extraction_source(chunks, limit=4)
-    assert selected.chunk_id.tolist() == ["c0", "c4", "c7", "c11"]
+    assert selected.chunk_id.tolist() == ["c0", "c5", "c8", "c11"]
 
 
 def test_coreference_filter_is_conservative_and_case_insensitive():
