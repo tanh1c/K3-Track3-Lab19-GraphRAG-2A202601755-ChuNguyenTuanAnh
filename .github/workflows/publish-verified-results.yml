@@ -1,0 +1,90 @@
+name: Publish verified Lab19 results
+
+on:
+  push:
+    branches:
+      - lab19/full-score-ci-bonus
+    paths:
+      - .ci/publish-results
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lab19-publish-results
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout verified submission branch
+        uses: actions/checkout@v4
+        with:
+          ref: lab19/full-score-ci-bonus
+          fetch-depth: 1
+
+      - name: Download verified full-run artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lab19-full-22
+          path: verified_artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 32251876009
+
+      - name: Publish rubric evidence into repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs reports
+
+          cp verified_artifact/outputs/Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide_executed.ipynb outputs/
+          cp verified_artifact/outputs/Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide_executed.ipynb Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide.ipynb
+
+          for file in \
+            bonus_before_after.csv \
+            bonus_metrics.csv \
+            canonical_triples.csv \
+            community_global_search_demo.csv \
+            community_reports.csv \
+            coref_spotcheck.csv \
+            entity_resolution_audit.csv \
+            extraction_errors.csv \
+            extraction_source.csv \
+            graph_checks.json \
+            graphrag_eval_results.csv \
+            graphrag_vs_flatrag_summary.csv \
+            near_dedup_audit.csv \
+            nodes.csv \
+            raw_triples.csv \
+            retrieval_router_demo.csv \
+            run_manifest.json \
+            self_correction_bonus_eval.csv \
+            supernode_diagnostics.csv; do
+            cp "verified_artifact/outputs/${file}" "outputs/${file}"
+          done
+
+          cp verified_artifact/reports/failure_analysis.md reports/failure_analysis.md
+          cp verified_artifact/reports/graphrag_eval_results.csv reports/graphrag_eval_results.csv
+          cp verified_artifact/reports/graphrag_vs_flatrag_summary.csv reports/graphrag_vs_flatrag_summary.csv
+          cp verified_artifact/reports/lab_report.md reports/lab_report.md
+          cp verified_artifact/reports/reflection_ChuNguyenTuanAnh.md reports/reflection_ChuNguyenTuanAnh.md
+          cp verified_artifact/reports/technical_defense.md reports/technical_defense.md
+
+          rm -rf verified_artifact
+
+      - name: Commit verified full-run evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide.ipynb outputs reports
+          if git diff --cached --quiet; then
+            echo "Verified results already published."
+            exit 0
+          fi
+          git commit -m "results: publish strict-bonus verified full benchmark"
+          git push origin HEAD:lab19/full-score-ci-bonus

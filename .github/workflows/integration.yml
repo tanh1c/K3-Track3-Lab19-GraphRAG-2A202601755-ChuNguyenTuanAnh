@@ -1,0 +1,175 @@
+name: Lab19 Integration
+
+on:
+  push:
+    branches:
+      - lab19/full-score-ci-bonus
+    paths:
+      - '.ci/run-integration'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: lab19-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      NEO4J_URI: ${{ vars.NEO4J_URI }}
+      NEO4J_USER: ${{ vars.NEO4J_USER }}
+      NEO4J_DATABASE: ${{ vars.NEO4J_DATABASE }}
+      NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LLM_PROVIDER: openai
+      OPENAI_PIPELINE_MODEL: gpt-4.1-mini
+      OPENAI_GENERATION_MODEL: gpt-4.1-mini
+      JUDGE_PROVIDER: openai
+      JUDGE_MODEL: ${{ vars.JUDGE_MODEL }}
+      SOURCE_MAX_ROWS: '5000'
+      PYTHONUNBUFFERED: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve requested mode
+        id: mode
+        shell: bash
+        run: |
+          if [ -f .ci/run-integration ]; then
+            MODE="$(head -n 1 .ci/run-integration | tr -d '[:space:]')"
+          else
+            MODE="preflight"
+          fi
+          case "$MODE" in
+            preflight|smoke|full) ;;
+            *) echo "Unsupported integration mode: $MODE"; exit 2 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Integration mode: $MODE"
+
+      - name: Publish inspectable run id to PR
+        uses: actions/github-script@v7
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        with:
+          script: |
+            const marker = '<!-- lab19-integration-status -->';
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner, repo: context.repo.repo, commit_sha: context.sha,
+            });
+            if (!prs.data.length) return;
+            const issue_number = prs.data[0].number;
+            const body = `${marker}\n### Lab19 Integration\n- Run ID: \`${context.runId}\`\n- Mode: \`${process.env.MODE}\`\n- Status: **running**\n- Trigger SHA: \`${context.sha}\``;
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number, per_page: 100,
+            });
+            const existing = comments.data.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number, body });
+            }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install integration dependencies (CPU only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -r requirements.txt
+
+      - name: Unit gate
+        run: python -m pytest -q
+
+      - name: Restore resumable LLM checkpoints
+        if: steps.mode.outputs.mode != 'preflight'
+        uses: actions/cache@v4
+        with:
+          path: |
+            outputs/checkpoints
+            outputs/graphrag_eval_checkpoint.csv
+          key: lab19-openai-${{ steps.mode.outputs.mode }}-${{ github.run_id }}
+          restore-keys: |
+            lab19-openai-${{ steps.mode.outputs.mode }}-
+
+      - name: Preflight external services
+        if: steps.mode.outputs.mode == 'preflight'
+        run: python -m scripts.preflight
+
+      - name: Execute submission notebook — smoke
+        if: steps.mode.outputs.mode == 'smoke'
+        env:
+          LAB_RUN_MODE: smoke
+        run: |
+          jupyter nbconvert \
+            --to notebook \
+            --execute Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide.ipynb \
+            --output Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide_executed.ipynb \
+            --output-dir outputs \
+            --ExecutePreprocessor.timeout=10800
+
+      - name: Execute submission notebook — full
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          LAB_RUN_MODE: full
+        run: |
+          jupyter nbconvert \
+            --to notebook \
+            --execute Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide.ipynb \
+            --output Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide_executed.ipynb \
+            --output-dir outputs \
+            --ExecutePreprocessor.timeout=10800
+
+      - name: Full rubric submission gate
+        if: steps.mode.outputs.mode == 'full'
+        run: |
+          python - <<'PY'
+          from lab19_submission import validate_submission
+          print(validate_submission('.', mode='full'))
+          PY
+
+      - name: Upload integration artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab19-${{ steps.mode.outputs.mode }}-${{ github.run_number }}
+          path: |
+            outputs/
+            reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Update integration status comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const marker = '<!-- lab19-integration-status -->';
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner, repo: context.repo.repo, commit_sha: context.sha,
+            });
+            if (!prs.data.length) return;
+            const issue_number = prs.data[0].number;
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number, per_page: 100,
+            });
+            const existing = comments.data.find(c => c.body && c.body.includes(marker));
+            if (!existing) return;
+            const body = `${marker}\n### Lab19 Integration\n- Run ID: \`${context.runId}\`\n- Mode: \`${process.env.MODE}\`\n- Status: **${process.env.JOB_STATUS}**\n- Trigger SHA: \`${context.sha}\`\n- Artifact: \`lab19-${process.env.MODE}-${context.runNumber}\``;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body,
+            });
