@@ -61,6 +61,31 @@ def test_extraction_source_is_query_agnostic_and_spans_whole_chunk_table():
     assert selected.source_row_id.nunique() == 400
 
 
+def test_extraction_source_prefers_relation_rich_chunks_inside_coverage_bins():
+    chunks = pd.DataFrame(
+        {
+            "chunk_id": [f"c{i}" for i in range(12)],
+            "source_row_id": range(12),
+            "text": [
+                "plain background text",
+                "plain background text",
+                "plain background text",
+                "plain background text",
+                "Microsoft partnered with Contoso and invested in its AI platform.",
+                "plain background text",
+                "plain background text",
+                "Aeris acquired a technology business and uses its IoT platform.",
+                "plain background text",
+                "plain background text",
+                "plain background text",
+                "plain background text",
+            ],
+        }
+    )
+    selected = select_extraction_source(chunks, limit=4)
+    assert selected.chunk_id.tolist() == ["c0", "c4", "c7", "c11"]
+
+
 def test_coreference_filter_is_conservative_and_case_insensitive():
     assert needs_coreference("Microsoft launched it after testing.") is True
     assert needs_coreference("THE COMPANY announced a product.") is True
