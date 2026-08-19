@@ -1,18 +1,20 @@
 name: Lab19 Integration
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - lab19/full-score-ci-bonus
     paths:
       - '.ci/run-integration'
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: write
+  issues: write
 
 concurrency:
-  group: lab19-integration-${{ github.event.pull_request.number || github.ref }}
+  group: lab19-integration-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -62,6 +64,47 @@ jobs:
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "Integration mode: $MODE"
 
+      - name: Publish inspectable run id to PR
+        uses: actions/github-script@v7
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        with:
+          script: |
+            const marker = '<!-- lab19-integration-status -->';
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            if (!prs.data.length) {
+              core.info('No associated PR; skipping status comment.');
+              return;
+            }
+            const issue_number = prs.data[0].number;
+            const body = `${marker}\n### Lab19 Integration\n- Run ID: \`${context.runId}\`\n- Mode: \`${process.env.MODE}\`\n- Status: **running**\n- Trigger SHA: \`${context.sha}\``;
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.data.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body,
+              });
+            }
+
       - name: Preflight external services
         if: steps.mode.outputs.mode == 'preflight'
         run: python scripts/preflight.py
@@ -84,3 +127,35 @@ jobs:
             reports/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Update integration status comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const marker = '<!-- lab19-integration-status -->';
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            if (!prs.data.length) return;
+            const issue_number = prs.data[0].number;
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.data.find(c => c.body && c.body.includes(marker));
+            if (!existing) return;
+            const body = `${marker}\n### Lab19 Integration\n- Run ID: \`${context.runId}\`\n- Mode: \`${process.env.MODE}\`\n- Status: **${process.env.JOB_STATUS}**\n- Trigger SHA: \`${context.sha}\`\n- Artifact: \`lab19-${process.env.MODE}-${context.runNumber}\``;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
