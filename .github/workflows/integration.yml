@@ -110,7 +110,7 @@ jobs:
 
       - name: Preflight external services
         if: steps.mode.outputs.mode == 'preflight'
-        run: python scripts/preflight.py
+        run: python -m scripts.preflight
 
       - name: Execute submission notebook — smoke
         if: steps.mode.outputs.mode == 'smoke'
@@ -135,6 +135,14 @@ jobs:
             --output Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide_executed.ipynb \
             --output-dir outputs \
             --ExecutePreprocessor.timeout=10800
+
+      - name: Full rubric submission gate
+        if: steps.mode.outputs.mode == 'full'
+        run: |
+          python - <<'PY'
+          from lab19_submission import validate_submission
+          print(validate_submission('.', mode='full'))
+          PY
 
       - name: Upload integration artifacts
         if: always()
