@@ -22,15 +22,17 @@ def test_non_reasoning_model_request_keeps_only_completion_budget():
     assert options == {"max_completion_tokens": 64}
 
 
-def test_run_modes_keep_full_scope_but_reduce_only_expensive_smoke_work():
+def test_run_modes_keep_full_scope_but_use_rate_limit_safe_runtime_policy():
     smoke = RunConfig.for_mode("smoke")
     full = RunConfig.for_mode("full")
     assert smoke.extraction_max_chunks == 24
     assert smoke.golden_limit == 3
     assert full.extraction_max_chunks == 400
     assert full.golden_limit == 50
-    assert smoke.groq_timeout_s == 45.0
-    assert smoke.groq_min_interval_s >= 10.0
+    assert smoke.groq_timeout_s >= 60.0
+    assert smoke.groq_min_interval_s >= 20.0
+    assert full.groq_timeout_s >= 60.0
+    assert full.groq_min_interval_s >= 20.0
 
 
 def test_parse_json_accepts_fenced_json():
