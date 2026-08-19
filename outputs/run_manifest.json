@@ -1,0 +1,15 @@
+{
+  "mode": "full",
+  "source_policy": "FIRST_5000_ROWS_ONLY",
+  "source_rows_downloaded": 5000,
+  "articles_after_dedup": 2114,
+  "chunks_indexed": 2114,
+  "chunks_llm_extracted": 400,
+  "triples": 266,
+  "nodes": 415,
+  "golden_questions_evaluated": 50,
+  "entity_audit_rows": 16,
+  "near_dedup_rows": 5,
+  "communities": 163,
+  "invalid_provenance_edges": 0
+}

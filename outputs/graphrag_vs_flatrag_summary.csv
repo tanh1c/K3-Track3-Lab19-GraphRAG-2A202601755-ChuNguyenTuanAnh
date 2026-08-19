@@ -1,0 +1,16 @@
+question_group,metric,flat_rag,graph_rag,delta_graph_minus_flat
+cross-doc,Comprehensiveness,3.591,3.955,0.364
+cross-doc,Faithfulness,3.682,3.955,0.273
+cross-doc,Multi-hop reasoning,3.455,3.773,0.318
+cross-doc,Latency (s),2.487,5.14,2.653
+cross-doc,Token usage,931.091,1797.636,866.545
+factoid,Comprehensiveness,5.0,5.0,0.0
+factoid,Faithfulness,5.0,5.0,0.0
+factoid,Multi-hop reasoning,4.2,5.0,0.8
+factoid,Latency (s),1.498,4.189,2.691
+factoid,Token usage,884.6,1496.4,611.8
+multi-hop,Comprehensiveness,3.391,3.565,0.174
+multi-hop,Faithfulness,3.391,3.565,0.174
+multi-hop,Multi-hop reasoning,3.261,3.435,0.174
+multi-hop,Latency (s),3.146,5.911,2.765
+multi-hop,Token usage,981.913,1803.043,821.13

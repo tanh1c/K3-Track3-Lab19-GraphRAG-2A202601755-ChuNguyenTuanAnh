@@ -1,0 +1,6 @@
+bonus,metric,value
+Near-Dedup SimHash/LSH,near_duplicates_removed,5
+Global Search Community Reports,communities,163
+Self-Correction Graph Retrieval,hop2,36
+Self-Correction Graph Retrieval,hop3,0
+Self-Correction Graph Retrieval,hop3+vector,14
