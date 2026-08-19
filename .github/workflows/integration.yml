@@ -27,14 +27,15 @@ jobs:
       NEO4J_DATABASE: ${{ vars.NEO4J_DATABASE }}
       NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      GROQ_MODEL: ${{ vars.GROQ_MODEL }}
-      GROQ_FAST_MODEL: llama-3.1-8b-instant
+      GROQ_FAST_MODEL: openai/gpt-oss-20b
+      GROQ_GENERATION_MODEL: openai/gpt-oss-20b
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       JUDGE_PROVIDER: ${{ vars.JUDGE_PROVIDER }}
       JUDGE_MODEL: ${{ vars.JUDGE_MODEL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SOURCE_MAX_ROWS: '5000'
       PYTHONUNBUFFERED: '1'
+
     steps:
       - uses: actions/checkout@v4
 
@@ -62,36 +63,23 @@ jobs:
           script: |
             const marker = '<!-- lab19-integration-status -->';
             const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              commit_sha: context.sha,
+              owner: context.repo.owner, repo: context.repo.repo, commit_sha: context.sha,
             });
-            if (!prs.data.length) {
-              core.info('No associated PR; skipping status comment.');
-              return;
-            }
+            if (!prs.data.length) return;
             const issue_number = prs.data[0].number;
             const body = `${marker}\n### Lab19 Integration\n- Run ID: \`${context.runId}\`\n- Mode: \`${process.env.MODE}\`\n- Status: **running**\n- Trigger SHA: \`${context.sha}\``;
             const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              per_page: 100,
+              owner: context.repo.owner, repo: context.repo.repo, issue_number, per_page: 100,
             });
             const existing = comments.data.find(c => c.body && c.body.includes(marker));
             if (existing) {
               await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
               });
             } else {
               await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo, issue_number, body,
               });
             }
 
@@ -109,17 +97,44 @@ jobs:
       - name: Unit gate
         run: python -m pytest -q
 
+      - name: Restore resumable LLM checkpoints
+        if: steps.mode.outputs.mode != 'preflight'
+        uses: actions/cache@v4
+        with:
+          path: |
+            outputs/checkpoints
+            outputs/graphrag_eval_checkpoint.csv
+          key: lab19-${{ steps.mode.outputs.mode }}-${{ github.run_id }}
+          restore-keys: |
+            lab19-${{ steps.mode.outputs.mode }}-
+
       - name: Preflight external services
         if: steps.mode.outputs.mode == 'preflight'
         run: python scripts/preflight.py
 
-      - name: Smoke pipeline
+      - name: Execute submission notebook — smoke
         if: steps.mode.outputs.mode == 'smoke'
-        run: python scripts/run_lab.py --mode smoke
+        env:
+          LAB_RUN_MODE: smoke
+        run: |
+          jupyter nbconvert \
+            --to notebook \
+            --execute Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide.ipynb \
+            --output Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide_executed.ipynb \
+            --output-dir outputs \
+            --ExecutePreprocessor.timeout=10800
 
-      - name: Full lab pipeline
+      - name: Execute submission notebook — full
         if: steps.mode.outputs.mode == 'full'
-        run: python scripts/run_lab.py --mode full
+        env:
+          LAB_RUN_MODE: full
+        run: |
+          jupyter nbconvert \
+            --to notebook \
+            --execute Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide.ipynb \
+            --output Day19_GraphRAG_vs_FlatRAG_Production_Lab_Guide_executed.ipynb \
+            --output-dir outputs \
+            --ExecutePreprocessor.timeout=10800
 
       - name: Upload integration artifacts
         if: always()
@@ -142,24 +157,17 @@ jobs:
           script: |
             const marker = '<!-- lab19-integration-status -->';
             const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              commit_sha: context.sha,
+              owner: context.repo.owner, repo: context.repo.repo, commit_sha: context.sha,
             });
             if (!prs.data.length) return;
             const issue_number = prs.data[0].number;
             const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              per_page: 100,
+              owner: context.repo.owner, repo: context.repo.repo, issue_number, per_page: 100,
             });
             const existing = comments.data.find(c => c.body && c.body.includes(marker));
             if (!existing) return;
             const body = `${marker}\n### Lab19 Integration\n- Run ID: \`${context.runId}\`\n- Mode: \`${process.env.MODE}\`\n- Status: **${process.env.JOB_STATUS}**\n- Trigger SHA: \`${context.sha}\`\n- Artifact: \`lab19-${process.env.MODE}-${context.runNumber}\``;
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: existing.id,
-              body,
+              owner: context.repo.owner, repo: context.repo.repo,
+              comment_id: existing.id, body,
             });

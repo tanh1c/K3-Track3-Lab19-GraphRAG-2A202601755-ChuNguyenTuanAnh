@@ -7,6 +7,8 @@ import sys
 import time
 from typing import Callable
 
+from lab19_models import DEFAULT_GROQ_MODEL
+
 
 def required_env(name: str) -> str:
     value = os.getenv(name, "").strip()
@@ -37,31 +39,29 @@ def run_check(name: str, fn: Callable[[], dict]) -> tuple[dict, bool]:
 def main() -> int:
     out_dir = Path("outputs")
     out_dir.mkdir(parents=True, exist_ok=True)
+    neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j").strip() or "neo4j"
+    groq_fast_model = os.getenv("GROQ_FAST_MODEL", DEFAULT_GROQ_MODEL).strip()
+    judge_provider = os.getenv("JUDGE_PROVIDER", "openai").strip().lower()
+    judge_model = os.getenv("JUDGE_MODEL", "").strip()
     report: dict[str, object] = {
         "mode": "preflight",
         "checks": {},
         "secrets_printed": False,
-    }
-
-    neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j").strip() or "neo4j"
-    groq_fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant").strip()
-    judge_provider = os.getenv("JUDGE_PROVIDER", "openai").strip().lower()
-    judge_model = os.getenv("JUDGE_MODEL", "").strip()
-    report["configuration"] = {
-        "neo4j_database": neo4j_database,
-        "groq_fast_model": groq_fast_model,
-        "judge_provider": judge_provider,
-        "judge_model": judge_model,
-        "source_policy": "FIRST_5000_ROWS_ONLY",
+        "configuration": {
+            "neo4j_database": neo4j_database,
+            "groq_fast_model": groq_fast_model,
+            "judge_provider": judge_provider,
+            "judge_model": judge_model,
+            "source_policy": "FIRST_5000_ROWS_ONLY",
+        },
     }
 
     def check_neo4j() -> dict:
         from neo4j import GraphDatabase
-
-        uri = required_env("NEO4J_URI")
-        user = required_env("NEO4J_USER")
-        password = required_env("NEO4J_PASSWORD")
-        driver = GraphDatabase.driver(uri, auth=(user, password))
+        driver = GraphDatabase.driver(
+            required_env("NEO4J_URI"),
+            auth=(required_env("NEO4J_USER"), required_env("NEO4J_PASSWORD")),
+        )
         try:
             driver.verify_connectivity()
             with driver.session(database=neo4j_database) as session:
@@ -74,17 +74,14 @@ def main() -> int:
 
     def check_huggingface() -> dict:
         from datasets import load_dataset
-
-        token = required_env("HF_TOKEN")
         ds = load_dataset(
             "HackerNoon/tech-company-news-data-dump",
             split="train",
             streaming=True,
-            token=token,
+            token=required_env("HF_TOKEN"),
         )
         iterator = iter(ds)
-        first = next(iterator)
-        second = next(iterator)
+        first, second = next(iterator), next(iterator)
         columns = list(first.keys())
         if not columns or set(first.keys()) != set(second.keys()):
             raise RuntimeError("Hugging Face stream returned inconsistent schema")
@@ -92,8 +89,13 @@ def main() -> int:
 
     def check_groq() -> dict:
         from groq import Groq
-
         client = Groq(api_key=required_env("GROQ_API_KEY"), timeout=30.0, max_retries=0)
+        available = {m.id for m in client.models.list().data}
+        if groq_fast_model not in available:
+            raise RuntimeError(
+                f"Configured Groq model {groq_fast_model!r} is not available; "
+                f"active model count={len(available)}"
+            )
         response = client.chat.completions.create(
             model=groq_fast_model,
             messages=[
@@ -136,8 +138,7 @@ def main() -> int:
 
     report["ok"] = overall
     (out_dir / "preflight.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print("[preflight] Sanitized report written to outputs/preflight.json")
     return 0 if overall else 1

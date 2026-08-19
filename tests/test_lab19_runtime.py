@@ -1,6 +1,7 @@
 import pandas as pd
 
-from lab19_runtime import DEFAULT_GROQ_MODEL, GroqRuntime, RunConfig, comparison_table
+from lab19_models import DEFAULT_GROQ_MODEL
+from lab19_runtime import GroqRuntime, RunConfig, comparison_table
 
 
 def test_default_groq_model_uses_current_post_deprecation_replacement():
