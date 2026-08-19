@@ -156,7 +156,12 @@ def build_chunks(
     size: int = CHUNK_WORDS,
     overlap: int = CHUNK_OVERLAP_WORDS,
 ) -> pd.DataFrame:
-    """Chunk every standardized article; never truncate from the head."""
+    """Chunk every standardized article; never truncate from the head.
+
+    External article IDs such as URLs are not guaranteed unique. If an ID is
+    repeated across distinct source rows, include the deterministic source row
+    in the chunk prefix so provenance/checkpoints still have unique chunk IDs.
+    """
     required = {
         "source_row_id",
         "article_id",
@@ -168,12 +173,19 @@ def build_chunks(
     if missing:
         raise ValueError(f"news dataframe missing columns: {sorted(missing)}")
 
+    article_ids = news_df["article_id"].fillna("").astype(str)
+    repeated_article_ids = set(article_ids[article_ids.duplicated(keep=False)].tolist())
+
     rows: list[dict] = []
     for row in news_df.itertuples(index=False):
+        article_id = str(row.article_id)
+        chunk_prefix = article_id
+        if article_id in repeated_article_ids:
+            chunk_prefix = f"{article_id}::r{int(row.source_row_id):05d}"
         for idx, text in enumerate(chunk_words(row.text, size=size, overlap=overlap)):
             rows.append(
                 {
-                    "chunk_id": f"{row.article_id}::c{idx:04d}",
+                    "chunk_id": f"{chunk_prefix}::c{idx:04d}",
                     "source_row_id": int(row.source_row_id),
                     "article_id": row.article_id,
                     "title": row.title,
@@ -181,7 +193,10 @@ def build_chunks(
                     "text": text,
                 }
             )
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if not out.empty and not out["chunk_id"].is_unique:
+        raise AssertionError("chunk_id must be unique after source-row disambiguation")
+    return out
 
 
 def _relation_signal_score(text: object) -> int:
