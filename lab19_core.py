@@ -78,8 +78,6 @@ def merge_guard(a: str, b: str, entity_type: str) -> bool:
         if sa and sa == sb:
             return True
         ta, tb = sa.split(), sb.split()
-        # A company name being a strict prefix of a longer phrase is usually a
-        # product/subsidiary mention (Apple vs Apple Watch), so reject it.
         if sa and sb and (sa.startswith(sb + " ") or sb.startswith(sa + " ")):
             return False
         return SequenceMatcher(None, sa, sb).ratio() >= 0.86 and abs(len(ta) - len(tb)) <= 1
@@ -88,13 +86,10 @@ def merge_guard(a: str, b: str, entity_type: str) -> bool:
         ta, tb = na.split(), nb.split()
         if len(ta) < 2 or len(tb) < 2:
             return False
-        # Matching surname alone is not enough; require same first and last token.
         if ta[0] != tb[0] or ta[-1] != tb[-1]:
             return False
         return SequenceMatcher(None, na, nb).ratio() >= 0.88
 
-    # Technology/product names are semantically fragile. Require very strong
-    # lexical evidence unless they normalize exactly.
     if na.startswith(nb + " ") or nb.startswith(na + " "):
         return False
     return SequenceMatcher(None, na, nb).ratio() >= 0.92
@@ -135,7 +130,12 @@ def near_dedup_dataframe(
     max_hamming: int = 3,
     bands: int = 4,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Near-deduplicate with SimHash LSH rather than O(N^2) pairwise scans."""
+    """Near-deduplicate with SimHash LSH rather than O(N^2) pairwise scans.
+
+    The fingerprint is derived from article body text. Titles are intentionally
+    excluded because syndicated/reposted copies often prepend publisher-specific
+    title text while retaining nearly identical article content.
+    """
     required = {"title", "text", "source_row_id"}
     missing = required.difference(df.columns)
     if missing:
@@ -153,8 +153,7 @@ def near_dedup_dataframe(
     audit: list[dict] = []
 
     for pos, row in enumerate(df.itertuples(index=False)):
-        combined = f"{getattr(row, 'title', '')}\n{getattr(row, 'text', '')}"
-        value = simhash64(combined)
+        value = simhash64(getattr(row, "text", ""))
         candidates: set[int] = set()
         for band in range(bands):
             key = (band, (value >> (band * band_bits)) & band_mask)
