@@ -38,9 +38,6 @@ _COREF_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
-# Generic lexical signals derived only from the assignment relation schema.
-# They are deliberately query/golden-agnostic: the selector never sees benchmark
-# questions, reference answers, seed entities, evidence row IDs, or gold metadata.
 _RELATION_SIGNAL_PATTERNS = (
     re.compile(r"\bacquir(?:e|es|ed|ing|er|ers|isition|isitions)\b", re.I),
     re.compile(r"\bdevelop(?:s|ed|ing|er|ers|ment|ments)?\b", re.I),
@@ -72,26 +69,45 @@ def standardize_news(raw: pd.DataFrame) -> pd.DataFrame:
 
     The source scope is applied *before* all other operations. `source_row_id`
     always refers to the zero-based row position in that authoritative prefix.
-    No sampling or shuffling is performed.
+    HackerNoon's current dataset schema exposes article snippets as `description`;
+    for that schema the retrieval text is `title + description` so headline facts
+    are not discarded. No sampling or shuffling is performed.
     """
     scoped = take_first_n_rows(raw, SOURCE_MAX_ROWS).copy()
     scoped["source_row_id"] = range(len(scoped))
 
-    text_col = _pick_col(scoped, ["text", "content", "article", "body", "story"])
+    text_col = _pick_col(
+        scoped,
+        ["text", "content", "article", "body", "story", "description"],
+    )
     title_col = _pick_col(scoped, ["title", "headline"], required=False)
     date_col = _pick_col(
         scoped,
         ["published_date", "date", "published_at", "created_at"],
         required=False,
     )
-    id_col = _pick_col(scoped, ["id", "article_id", "story_id", "uuid"], required=False)
+    id_col = _pick_col(
+        scoped,
+        ["id", "article_id", "story_id", "uuid", "url"],
+        required=False,
+    )
 
     out = pd.DataFrame(index=scoped.index)
     out["source_row_id"] = scoped["source_row_id"].astype(int)
-    out["text"] = scoped[text_col].fillna("").map(normalize_text)
-    out["title"] = (
-        scoped[title_col].fillna("").map(normalize_text) if title_col else ""
+    titles = (
+        scoped[title_col].fillna("").map(normalize_text)
+        if title_col
+        else pd.Series("", index=scoped.index, dtype="object")
     )
+    bodies = scoped[text_col].fillna("").map(normalize_text)
+    out["title"] = titles
+    if str(text_col).lower() == "description":
+        out["text"] = [
+            normalize_text(f"{title}. {body}" if title and body else title or body)
+            for title, body in zip(titles, bodies)
+        ]
+    else:
+        out["text"] = bodies
 
     if date_col:
         out["published_date"] = (
@@ -169,12 +185,7 @@ def build_chunks(
 
 
 def _relation_signal_score(text: object) -> int:
-    """Count schema-derived relation cues in a chunk.
-
-    Capping each pattern at two matches prevents repetitive prose from dominating
-    a coverage bin while still rewarding chunks that express multiple relation
-    types (for example, PARTNERED_WITH + INVESTED_IN).
-    """
+    """Count schema-derived relation cues in a chunk."""
     normalized = normalize_text(text)
     return sum(min(2, len(pattern.findall(normalized))) for pattern in _RELATION_SIGNAL_PATTERNS)
 
@@ -184,16 +195,7 @@ def select_extraction_source(
     *,
     limit: int = EXTRACTION_MAX_CHUNKS,
 ) -> pd.DataFrame:
-    """Pick a deterministic, corpus-wide, relation-rich extraction subset.
-
-    The first and last chunks are always retained. The remaining corpus is split
-    into contiguous coverage bins; exactly one chunk is chosen from each bin.
-    Within a bin, generic relation cues derived from the assignment allowlist are
-    preferred. Ties choose the chunk nearest the bin center, then the lower index.
-
-    This improves graph yield without benchmark leakage: no golden question,
-    answer, evidence-row metadata, or query-specific entity is consulted.
-    """
+    """Pick a deterministic, corpus-wide, relation-rich extraction subset."""
     if limit <= 0:
         raise ValueError("limit must be positive")
     if chunks_df.empty:
@@ -214,7 +216,6 @@ def select_extraction_source(
     interior_count = total - 2
 
     for slot in range(interior_slots):
-        # Partition indices 1..total-2 into non-overlapping contiguous bins.
         start = 1 + (slot * interior_count) // interior_slots
         end_exclusive = 1 + ((slot + 1) * interior_count) // interior_slots
         if end_exclusive <= start:

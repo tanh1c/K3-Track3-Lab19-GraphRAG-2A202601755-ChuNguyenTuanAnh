@@ -28,6 +28,32 @@ def test_source_scope_is_locked_to_first_5000_rows_and_preserves_source_ids():
     assert news.iloc[-1].source_row_id == 4999
 
 
+def test_standardize_news_supports_current_hackernoon_schema():
+    raw = pd.DataFrame(
+        [
+            {
+                "companyName": "ExampleCo",
+                "companyUrl": "https://hackernoon.com/company/exampleco",
+                "published_at": "2023-05-16 02:09:00",
+                "url": "https://example.com/news/1",
+                "title": "ExampleCo partnered with Contoso on an AI platform",
+                "main_image": "https://example.com/image.png",
+                "description": (
+                    "The companies announced a multi-year partnership to develop and use "
+                    "an enterprise artificial intelligence platform across cloud services."
+                ),
+            }
+        ]
+    )
+    news = standardize_news(raw)
+    assert len(news) == 1
+    assert news.iloc[0].source_row_id == 0
+    assert news.iloc[0].published_date == "2023-05-16"
+    assert news.iloc[0].article_id == "https://example.com/news/1"
+    assert news.iloc[0].text.startswith("ExampleCo partnered with Contoso")
+    assert "enterprise artificial intelligence platform" in news.iloc[0].text
+
+
 def test_build_chunks_keeps_source_row_id_and_does_not_head_truncate():
     news = pd.DataFrame(
         [
