@@ -72,6 +72,31 @@ def test_build_chunks_keeps_source_row_id_and_does_not_head_truncate():
     assert chunks.iloc[-1].chunk_id == "last::c0002"
 
 
+def test_build_chunks_disambiguates_repeated_external_article_ids():
+    news = pd.DataFrame(
+        [
+            {
+                "source_row_id": 10,
+                "article_id": "https://example.com/shared",
+                "title": "first",
+                "published_date": "2023-01-01",
+                "text": "first article body long enough to produce one chunk safely",
+            },
+            {
+                "source_row_id": 20,
+                "article_id": "https://example.com/shared",
+                "title": "second",
+                "published_date": "2023-01-02",
+                "text": "second different article body long enough to produce one chunk safely",
+            },
+        ]
+    )
+    chunks = build_chunks(news, size=100, overlap=0)
+    assert len(chunks) == 2
+    assert chunks.chunk_id.is_unique
+    assert chunks.source_row_id.tolist() == [10, 20]
+
+
 def test_extraction_source_is_query_agnostic_and_spans_whole_chunk_table():
     chunks = pd.DataFrame(
         {
