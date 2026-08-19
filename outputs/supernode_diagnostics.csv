@@ -1,16 +1,16 @@
 id,name,type,degree
 lab19_fb0f4df56fab164ec48722f0,Microsoft,Company,9
 lab19_1a324b330bd048e7308e53f0,artificial intelligence,Technology,7
-lab19_b823fb02e58a12bdc4c38934,NVIDIA,Company,5
-lab19_0e132222d1315530d6efca52,Google,Company,5
 lab19_cc9c6ee3857729e221d3f6de,ServiceNow,Company,5
+lab19_0e132222d1315530d6efca52,Google,Company,5
+lab19_b823fb02e58a12bdc4c38934,NVIDIA,Company,5
 lab19_e23c5421d4f8b156c0c6101c,UKG,Company,4
 lab19_773eeb9b7cc008bff365fcdd,OpenAI,Company,4
 lab19_4f5c599d80e3f459819f8d8f,AI,Technology,3
 lab19_fa2c6b919de1f8285f8d8d20,WiMi,Company,3
 lab19_560780a8c7dfa297cfdf94c8,Dragos Partner Program,Technology,3
+lab19_e37bc65aed41709c8353685f,Smart Eye,Company,3
 lab19_6dbfdfc5a4e8df3668a4dac3,Meta,Company,3
 lab19_483064d6337d5cd16bda1f38,PSG,Company,3
-lab19_e37bc65aed41709c8353685f,Smart Eye,Company,3
 lab19_2b088c1a7495a477c910a268,generative AI,Technology,3
 lab19_bc18d55f3997314f76b638e5,Senser,Company,3

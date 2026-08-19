@@ -1,17 +1,17 @@
 type,left,right,similarity,decision
 Company,MSFT,Microsoft,1.0,MERGE_MANUAL
-Company,Fidelity National Information Services Inc.,Fidelity National Information Services,0.9245240688323975,MERGE_VECTOR
+Company,Fidelity National Information Services Inc.,Fidelity National Information Services,0.924524188041687,MERGE_VECTOR
 Company,Fidelity National Information Services Inc.,Fidelity National Information Services,1.0,MERGE_MANUAL
-Company,Ivy Tech Community College - Columbus,Ivy Tech Community College,0.8987563848495483,REJECT_GUARD
-Company,Broadridge Financial Solutions,Broadridge,0.7547308802604675,REJECT_GUARD
+Company,Ivy Tech Community College - Columbus,Ivy Tech Community College,0.8987562656402588,REJECT_GUARD
+Company,Broadridge Financial Solutions,Broadridge,0.7547307014465332,REJECT_GUARD
 Company,more than 900 clients,more than 900 clients including more than 75 of the world’s top 100 enterprises,0.7664026021957397,REJECT_GUARD
-Company,Amazon.com,Amazon,0.8475308418273926,REJECT_GUARD
-Company,AST Spacemobile,SpaceMobile,0.8282737731933594,REJECT_GUARD
-Technology,generative AI,Generative AI Solutions,0.866632878780365,REJECT_GUARD
-Technology,generative AI,generative AI capabilities,0.8564844727516174,REJECT_GUARD
-Technology,generative AI capabilities,Generative AI Solutions,0.7730093002319336,REJECT_GUARD
-Technology,AI,artificial intelligence,0.7912462949752808,REJECT_GUARD
-Technology,AI,AI programs,0.7853389978408813,REJECT_GUARD
-Technology,smartphone,Android smartphones,0.8567755222320557,REJECT_GUARD
-Technology,Climate Innovation Fund,Climate Pledge Fund,0.7520827054977417,REJECT_GUARD
+Company,Amazon.com,Amazon,0.8475307822227478,REJECT_GUARD
+Company,AST Spacemobile,SpaceMobile,0.8282737135887146,REJECT_GUARD
+Technology,generative AI,Generative AI Solutions,0.8666328191757202,REJECT_GUARD
+Technology,generative AI,generative AI capabilities,0.8564844131469727,REJECT_GUARD
+Technology,generative AI capabilities,Generative AI Solutions,0.773009181022644,REJECT_GUARD
+Technology,AI,artificial intelligence,0.7912461757659912,REJECT_GUARD
+Technology,AI,AI programs,0.7853388786315918,REJECT_GUARD
+Technology,smartphone,Android smartphones,0.8567754626274109,REJECT_GUARD
+Technology,Climate Innovation Fund,Climate Pledge Fund,0.7520827651023865,REJECT_GUARD
 Technology,Midjourney 4,Midjourney Version 5,0.8746428489685059,REJECT_GUARD

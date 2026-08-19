@@ -18,4 +18,13 @@ For a production knowledge assistant, keep provenance on every relation, namespa
 
 ## Bonus evidence
 - Near-duplicates removed: 5
-- Community reports built: 163
+- Community reports built: 164
+
+## Strict Bonus Verification
+
+- Self-Correction / sufficiency_rate: before=0.250, after=1.000, delta=0.750
+- Self-Correction / mean_context_chars: before=2333.667, after=5517.500, delta=3183.833
+- Community Reports / llm_summary_rate: before=0.000, after=1.000, delta=1.000
+- Query router demo: local=2, global=2.
+- LLM self-correction sample=12; vector fallbacks=8; every row has a terminal stop condition.
+- Coreference spot-check exported to `outputs/coref_spotcheck.csv`.

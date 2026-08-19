@@ -1,0 +1,4 @@
+bonus,metric,before_hop2,after_final,delta
+Self-Correction,sufficiency_rate,0.25,1.0,0.75
+Self-Correction,mean_context_chars,2333.6666666666665,5517.5,3183.8333333333335
+Community Reports,llm_summary_rate,0.0,1.0,1.0

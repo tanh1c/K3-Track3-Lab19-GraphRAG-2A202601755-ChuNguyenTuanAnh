@@ -12,7 +12,7 @@ Ví dụ audit thực nghiệm: **Ivy Tech Community College - Columbus ↔ Ivy 
 ## 4. Top 3 super-node và degree?
 - 1. Microsoft (Company), degree=9
 - 2. artificial intelligence (Technology), degree=7
-- 3. NVIDIA (Company), degree=5
+- 3. ServiceNow (Company), degree=5
 
 ## 5. Vì sao ưu tiên edge mới nhất có thể đúng/sai?
 Đúng cho câu hỏi trạng thái hiện tại và kiểm soát context explosion; sai với câu hỏi lịch sử vì cạnh cũ có thể là evidence quyết định. Vì vậy policy chỉ kích hoạt khi degree >100, cap 50, đồng thời giữ provenance/date để failure analysis.
@@ -36,4 +36,13 @@ LLM extraction/rate limit là bottleneck đầu tiên, sau đó mới tới embe
 - **Comprehensiveness:** Flat=3.64, Graph=3.88
 - **Faithfulness:** Flat=3.68, Graph=3.88
 - **Multi-hop reasoning:** Flat=3.44, Graph=3.74
-- Graph nodes=415, edges=266, invalid provenance=0.
+- Graph nodes=418, edges=268, invalid provenance=0.
+
+## Strict Bonus Verification
+
+- Self-Correction / sufficiency_rate: before=0.250, after=1.000, delta=0.750
+- Self-Correction / mean_context_chars: before=2333.667, after=5517.500, delta=3183.833
+- Community Reports / llm_summary_rate: before=0.000, after=1.000, delta=1.000
+- Query router demo: local=2, global=2.
+- LLM self-correction sample=12; vector fallbacks=8; every row has a terminal stop condition.
+- Coreference spot-check exported to `outputs/coref_spotcheck.csv`.

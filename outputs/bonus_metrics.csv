@@ -1,6 +1,14 @@
 bonus,metric,value
-Near-Dedup SimHash/LSH,near_duplicates_removed,5
-Global Search Community Reports,communities,163
-Self-Correction Graph Retrieval,hop2,36
-Self-Correction Graph Retrieval,hop3,0
-Self-Correction Graph Retrieval,hop3+vector,14
+Near-Dedup SimHash/LSH,near_duplicates_removed,5.0
+Global Search Community Reports,communities,164.0
+Self-Correction Graph Retrieval,hop2,36.0
+Self-Correction Graph Retrieval,hop3,0.0
+Self-Correction Graph Retrieval,hop3+vector,14.0
+Global Search Community Reports,llm_summaries,164.0
+Global Search Community Reports,llm_summary_rate,1.0
+Low-level / High-level Router,global_routes,2.0
+Low-level / High-level Router,local_routes,2.0
+Self-Correction LLM Sufficiency,hop2,3.0
+Self-Correction LLM Sufficiency,hop3,1.0
+Self-Correction LLM Sufficiency,hop3+vector,8.0
+Self-Correction LLM Sufficiency,final_sufficient_rate,1.0

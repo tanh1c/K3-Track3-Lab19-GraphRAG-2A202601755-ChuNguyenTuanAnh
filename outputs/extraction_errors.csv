@@ -1,2 +1,1 @@
 start,chunk_ids,provider,error
-24,"[""https://investmentu.com/information-technology-stocks/::c0000"", ""https://technews.tmcnet.com/news/2023/07/20/9851763.htm::c0000"", ""https://www.benzinga.com/pressreleases/23/08/33773411/technology-research-services-market-analysis-report-2023-2030-104-pages-report::c0000"", ""https://www.tmcnet.com/usubmit/-systems-solution-inc-opens-new-company-headquarters-depot-/2023/03/15/9777681.htm::c0000""]",openai,ValueError: Malformed items envelope
