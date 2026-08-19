@@ -13,8 +13,10 @@ def test_actual_runtime_config_applies_groq_free_tier_guardrails():
     assert smoke.coref_batch_size == 4
     assert smoke.extraction_batch_size == 4
 
+    # Preserve the instructor scale guard; OpenAI handles answer synthesis/judging
+    # so Groq quota is reserved for coreference + NER/RE extraction.
     assert full.golden_limit == 50
-    assert 100 <= full.extraction_max_chunks <= 160
+    assert full.extraction_max_chunks == 400
     assert full.groq_timeout_s >= 60.0
     assert full.groq_min_interval_s >= 20.0
 

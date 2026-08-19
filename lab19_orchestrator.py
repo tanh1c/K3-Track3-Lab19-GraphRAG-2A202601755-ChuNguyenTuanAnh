@@ -1,8 +1,7 @@
 """Run-mode policy for Lab 19.
 
-This module is intentionally tiny: it applies provider-budget guardrails on top
-of the shared runtime config so smoke/full execution uses the same pipeline but
-cannot accidentally hammer the Groq free tier.
+This adapter mirrors the runtime guardrails for callers that want an explicit
+configuration object without executing the pipeline.
 """
 
 from __future__ import annotations
@@ -13,13 +12,7 @@ from lab19_runtime import RunConfig
 
 
 def effective_run_config(mode: str) -> RunConfig:
-    """Return a rate-limit-safe config for the requested execution mode.
-
-    The source corpus remains the first 5,000 rows in every mode. Smoke only
-    reduces expensive LLM/evaluation work. Full mode caps graph extraction at
-    160 distributed chunks and paces Groq at no more than roughly 3 requests
-    per minute before provider-driven Retry-After/backoff is applied.
-    """
+    """Return the assignment-scale configuration with conservative Groq pacing."""
     config = RunConfig.for_mode(mode)
     common = {
         "groq_timeout_s": max(config.groq_timeout_s, 60.0),
@@ -29,5 +22,5 @@ def effective_run_config(mode: str) -> RunConfig:
         "extraction_batch_size": 4,
     }
     if config.mode == "full":
-        return replace(config, extraction_max_chunks=160, **common)
+        return replace(config, extraction_max_chunks=400, **common)
     return replace(config, **common)

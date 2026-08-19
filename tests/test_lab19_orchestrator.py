@@ -1,11 +1,12 @@
 from lab19_orchestrator import effective_run_config
 
 
-def test_full_config_stays_within_groq_free_tier_budget_strategy():
+def test_full_config_keeps_assignment_scale_with_groq_pacing():
     config = effective_run_config("full")
     assert config.golden_limit == 50
-    assert 100 <= config.extraction_max_chunks <= 160
+    assert config.extraction_max_chunks == 400
     assert config.groq_min_interval_s >= 20.0
+    assert config.groq_timeout_s >= 60.0
     assert config.coref_batch_size == 4
     assert config.extraction_batch_size == 4
 

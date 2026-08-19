@@ -1,15 +1,15 @@
 """Runtime guardrails for Lab 19.
 
-The full implementation lives in :mod:`lab19_runtime_impl`.  This wrapper keeps
+The full implementation lives in :mod:`lab19_runtime_impl`. This wrapper keeps
 that implementation inspectable while applying provider-safe production policy
-in one place: current Groq defaults, conservative pacing, resumable JSON
-fallback, and stable audit CSV schemas.
+in one place: current Groq defaults, conservative pacing, resilient JSON
+fallback, stable audit CSV schemas, and OpenAI answer synthesis to preserve the
+Groq free-tier budget for rubric-critical extraction.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
-import json
 import os
 import time
 from typing import Any, Mapping
@@ -20,7 +20,6 @@ import lab19_runtime_impl as _impl
 from lab19_models import DEFAULT_GROQ_MODEL
 from lab19_utils import parse_retry_after_seconds
 
-# Keep direct notebook/local runs on the same post-deprecation model as CI.
 os.environ.setdefault("GROQ_FAST_MODEL", DEFAULT_GROQ_MODEL)
 os.environ.setdefault("GROQ_GENERATION_MODEL", DEFAULT_GROQ_MODEL)
 
@@ -61,10 +60,11 @@ def _safe_for_mode(cls, mode: str):
         "coref_batch_size": 4,
         "extraction_batch_size": 4,
     }
-    # Full extraction is intentionally bounded on the Groq free tier.  Selection
-    # spans the complete first-5000 corpus rather than taking the first N chunks.
+    # Preserve the assignment's 400-chunk full scale guard. The selector spans
+    # the complete first-5000 corpus rather than taking a head slice. Evaluation
+    # answer generation is routed to OpenAI, preserving Groq daily token budget.
     if str(base.mode).lower() == "full":
-        return replace(base, extraction_max_chunks=160, **common)
+        return replace(base, extraction_max_chunks=400, **common)
     return replace(base, **common)
 
 
@@ -197,9 +197,6 @@ def _resilient_chat_json(self, **kwargs: Any):
 _impl.GroqRuntime.chat_json = _resilient_chat_json
 
 
-# Use OpenAI for answer synthesis when available.  This preserves Groq quota for
-# the rubric-critical coreference/NER+RE extraction stages; the judge already uses
-# OpenAI in the configured submission environment.
 _original_generate_answer = _impl.generate_answer
 
 
@@ -236,5 +233,4 @@ def _openai_generate_answer(llm, question: str, context: str):
 
 _impl.generate_answer = _openai_generate_answer
 
-# Re-export the patched implementation so existing notebook/import paths remain stable.
 from lab19_runtime_impl import *  # noqa: E402,F401,F403
