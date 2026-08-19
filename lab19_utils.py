@@ -1,15 +1,16 @@
 """Shared utilities for Lab 19 CI and notebook execution.
 
-The module intentionally contains only deterministic, testable logic so the
+The module intentionally contains deterministic, testable logic so the
 lightweight CI never needs Neo4j, Hugging Face, Groq, or OpenAI credentials.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -29,6 +30,34 @@ def take_first_n_rows(df: pd.DataFrame, n: int = FIRST_N_ROWS) -> pd.DataFrame:
     if n <= 0:
         raise ValueError("n must be positive")
     return df.iloc[:n].copy().reset_index(drop=True)
+
+
+def select_stratified_indices(total: int, limit: int) -> list[int]:
+    """Select deterministic, corpus-wide indices without benchmark leakage.
+
+    When `limit < total`, the first and last records are always represented and
+    the remaining points are evenly spaced over the full corpus.  This avoids
+    the scaffold's head-only extraction bias while remaining query/gold agnostic.
+    """
+    if total < 0:
+        raise ValueError("total must be >= 0")
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    if total == 0:
+        return []
+    if limit >= total:
+        return list(range(total))
+    if limit == 1:
+        return [0]
+
+    denom = limit - 1
+    last = total - 1
+    idx = [round(i * last / denom) for i in range(limit)]
+    # For total > limit the spacing is >= 1, but keep this defensive assertion
+    # so future changes cannot silently introduce duplicate work.
+    if len(set(idx)) != len(idx):
+        raise AssertionError("stratified selection produced duplicate indices")
+    return idx
 
 
 @dataclass(frozen=True)
@@ -59,6 +88,68 @@ class RateLimitPolicy:
             rng = rng or random
             delay = min(delay + rng.uniform(0.0, self.jitter_s), self.max_delay_s)
         return float(delay)
+
+
+def parse_retry_after_seconds(headers: Mapping[str, Any] | None) -> float | None:
+    """Read Groq's numeric Retry-After header case-insensitively."""
+    if not headers:
+        return None
+    for key, value in headers.items():
+        if str(key).lower() != "retry-after":
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, parsed)
+    return None
+
+
+class JsonlCheckpoint:
+    """Append-only keyed JSONL checkpoint with last-write-wins semantics."""
+
+    def __init__(self, path: str | Path, key_field: str):
+        if not key_field:
+            raise ValueError("key_field is required")
+        self.path = Path(path)
+        self.key_field = key_field
+
+    def _resolved(self) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        if not self.path.exists():
+            return out
+        with self.path.open("r", encoding="utf-8") as f:
+            for line_no, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Malformed checkpoint JSON at {self.path}:{line_no}"
+                    ) from exc
+                if self.key_field not in row:
+                    raise ValueError(
+                        f"Checkpoint row missing key field {self.key_field!r}"
+                    )
+                out[str(row[self.key_field])] = row
+        return out
+
+    def completed_keys(self) -> set[str]:
+        return set(self._resolved())
+
+    def rows(self) -> list[dict[str, Any]]:
+        return list(self._resolved().values())
+
+    def upsert(self, row: Mapping[str, Any]) -> None:
+        if self.key_field not in row:
+            raise ValueError(f"row missing key field {self.key_field!r}")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True))
+            f.write("\n")
+            f.flush()
 
 
 def load_golden_dataset(path: str | Path) -> pd.DataFrame:
