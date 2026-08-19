@@ -1,11 +1,9 @@
 """Runtime guardrails for Lab 19.
 
-The full implementation lives in :mod:`lab19_runtime_impl`. This wrapper keeps
-that implementation inspectable while applying provider-safe production policy
-in one place: current Groq defaults, conservative pacing, resilient JSON
-fallback, resumable extraction semantics, stable audit CSV schemas, and OpenAI
-answer synthesis to preserve the Groq free-tier budget for rubric-critical
-coreference/NER+RE extraction.
+The instructor implementation remains in :mod:`lab19_runtime_impl`. This wrapper
+keeps that code inspectable while making OpenAI the primary LLM provider for
+coreference, NER/RE extraction, answer synthesis and evaluation support. Groq is
+optional only and is not required on the critical path.
 """
 
 from __future__ import annotations
@@ -14,26 +12,28 @@ from collections import Counter, defaultdict
 from dataclasses import replace
 import json
 import os
-import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
 
 import lab19_runtime_impl as _impl
 from lab19_core import merge_guard, normalize_entity, strip_corporate_suffix
-from lab19_models import DEFAULT_GROQ_MODEL
-from lab19_utils import parse_retry_after_seconds
+from lab19_models import (
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_OPENAI_GENERATION_MODEL,
+    DEFAULT_OPENAI_PIPELINE_MODEL,
+)
 
-os.environ.setdefault("GROQ_FAST_MODEL", DEFAULT_GROQ_MODEL)
-os.environ.setdefault("GROQ_GENERATION_MODEL", DEFAULT_GROQ_MODEL)
+os.environ.setdefault("LLM_PROVIDER", DEFAULT_LLM_PROVIDER)
+os.environ.setdefault("OPENAI_PIPELINE_MODEL", DEFAULT_OPENAI_PIPELINE_MODEL)
+os.environ.setdefault("OPENAI_GENERATION_MODEL", DEFAULT_OPENAI_GENERATION_MODEL)
 
 ENTITY_AUDIT_COLUMNS = ["type", "left", "right", "similarity", "decision"]
 EXTRACTION_ERROR_COLUMNS = ["start", "chunk_ids", "provider", "error"]
 
 
 def ensure_entity_audit_schema(audit: pd.DataFrame) -> pd.DataFrame:
-    """Return an audit frame that remains readable even when there are zero rows."""
     if audit is None or audit.empty:
         return pd.DataFrame(columns=ENTITY_AUDIT_COLUMNS)
     out = audit.copy()
@@ -45,7 +45,6 @@ def ensure_entity_audit_schema(audit: pd.DataFrame) -> pd.DataFrame:
 
 
 def ensure_extraction_error_schema(errors: pd.DataFrame) -> pd.DataFrame:
-    """Keep diagnostics machine-readable even when extraction has zero failures."""
     if errors is None or errors.empty:
         return pd.DataFrame(columns=EXTRACTION_ERROR_COLUMNS)
     out = errors.copy()
@@ -57,7 +56,6 @@ def ensure_extraction_error_schema(errors: pd.DataFrame) -> pd.DataFrame:
 
 
 def valid_items_payload(obj: Any) -> bool:
-    """Validate the shared coref/extraction envelope before downstream `.get()` calls."""
     if not isinstance(obj, dict):
         return False
     if "items" not in obj:
@@ -67,7 +65,6 @@ def valid_items_payload(obj: Any) -> bool:
 
 
 def valid_extraction_payload(obj: Any, expected_chunk_ids: set[str]) -> bool:
-    """Require one well-formed extraction item for every chunk in a batch."""
     if not valid_items_payload(obj):
         return False
     items = obj.get("items")
@@ -91,15 +88,14 @@ _original_for_mode = _impl.RunConfig.for_mode
 def _safe_for_mode(cls, mode: str):
     base = _original_for_mode(mode)
     common = {
+        # Legacy field names remain for notebook compatibility; values now govern
+        # the primary OpenAI client instead of Groq.
         "groq_timeout_s": max(float(base.groq_timeout_s), 60.0),
-        "groq_min_interval_s": max(float(base.groq_min_interval_s), 20.0),
-        "groq_max_retries": max(int(base.groq_max_retries), 7),
+        "groq_min_interval_s": 0.0,
+        "groq_max_retries": 5,
         "coref_batch_size": 4,
         "extraction_batch_size": 4,
     }
-    # Preserve the instructor's 400-chunk scale guard. Selection spans the
-    # complete first-5000 corpus, while OpenAI handles answer synthesis/judging
-    # so Groq daily budget is reserved for graph construction.
     if str(base.mode).lower() == "full":
         return replace(base, extraction_max_chunks=400, **common)
     return replace(base, **common)
@@ -108,17 +104,95 @@ def _safe_for_mode(cls, mode: str):
 _impl.RunConfig.for_mode = classmethod(_safe_for_mode)
 
 
+class OpenAIRuntime:
+    """OpenAI-backed runtime with SDK retries and no artificial provider sleep."""
+
+    def __init__(self, config: Any):
+        from openai import OpenAI
+
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("Missing OPENAI_API_KEY")
+        provider = os.getenv("LLM_PROVIDER", DEFAULT_LLM_PROVIDER).strip().lower()
+        if provider != "openai":
+            raise RuntimeError(f"Unsupported primary LLM_PROVIDER={provider!r}; expected 'openai'")
+        self.fast_model = (
+            os.getenv("OPENAI_PIPELINE_MODEL", DEFAULT_OPENAI_PIPELINE_MODEL).strip()
+            or DEFAULT_OPENAI_PIPELINE_MODEL
+        )
+        self.generation_model = (
+            os.getenv("OPENAI_GENERATION_MODEL", DEFAULT_OPENAI_GENERATION_MODEL).strip()
+            or self.fast_model
+        )
+        self.config = config
+        self.client = OpenAI(
+            api_key=api_key,
+            timeout=max(float(config.groq_timeout_s), 60.0),
+            max_retries=max(int(config.groq_max_retries), 3),
+        )
+
+    def _pace(self) -> None:
+        # Deliberately no fixed sleep. The OpenAI SDK handles transient 429/5xx
+        # retries with provider-aware backoff; calls remain sequential in this lab.
+        return None
+
+    @staticmethod
+    def parse_json(text: str) -> dict[str, Any]:
+        return _impl.GroqRuntimeOriginal.parse_json(text) if hasattr(_impl, "GroqRuntimeOriginal") else json.loads(text)
+
+    def chat(
+        self,
+        *,
+        system: str,
+        user: str,
+        model: str | None = None,
+        max_tokens: int = 1200,
+        json_mode: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        kwargs: dict[str, Any] = {
+            "model": model or self.fast_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.0,
+            "max_tokens": int(max_tokens),
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        response = self.client.chat.completions.create(**kwargs)
+        usage_obj = getattr(response, "usage", None)
+        usage = {
+            "prompt_tokens": getattr(usage_obj, "prompt_tokens", None),
+            "completion_tokens": getattr(usage_obj, "completion_tokens", None),
+            "total_tokens": getattr(usage_obj, "total_tokens", None),
+        }
+        return (response.choices[0].message.content or "").strip(), usage
+
+    def chat_json(self, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        text, usage = self.chat(json_mode=True, **kwargs)
+        clean = str(text).strip()
+        if clean.startswith("```"):
+            clean = clean.split("\n", 1)[-1]
+            clean = clean.rsplit("```", 1)[0]
+        obj = json.loads(clean)
+        if not valid_items_payload(obj):
+            raise ValueError("Malformed items envelope")
+        return obj, usage
+
+
+# Preserve the old parser for tests/backward compatibility before replacing the
+# instructor's provider class globally. All run_lab references resolve this symbol
+# at call time, so the notebook now instantiates OpenAIRuntime.
+_impl.GroqRuntimeOriginal = _impl.GroqRuntime
+_impl.GroqRuntime = OpenAIRuntime
+
+
 def apply_observed_suffix_aliases(
     raw_triples_df: pd.DataFrame,
     mapping: dict[tuple[str, str], str],
     audit: pd.DataFrame,
 ) -> tuple[dict[tuple[str, str], str], pd.DataFrame]:
-    """Deterministically merge observed Company suffix variants.
-
-    This is not synthetic rubric evidence: records are emitted only when two
-    distinct mentions actually occur in extracted triples and collapse to the
-    same corporate-suffix-stripped form (e.g. ``Acme Inc`` / ``Acme``).
-    """
     out_mapping = dict(mapping)
     rows = ensure_entity_audit_schema(audit).to_dict("records")
     mentions: list[tuple[str, str]] = []
@@ -131,7 +205,7 @@ def apply_observed_suffix_aliases(
 
     groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for key in counts:
-        typ, norm = key
+        typ, _ = key
         if typ != "Company":
             continue
         base = strip_corporate_suffix(display[key])
@@ -146,10 +220,7 @@ def apply_observed_suffix_aliases(
         unique = list(dict.fromkeys(keys))
         if len(unique) < 2:
             continue
-        canonical_key = sorted(
-            unique,
-            key=lambda key: (-counts[key], len(display[key]), display[key].lower()),
-        )[0]
+        canonical_key = sorted(unique, key=lambda key: (-counts[key], len(display[key]), display[key].lower()))[0]
         canonical = display[canonical_key]
         for key in unique:
             out_mapping[key] = canonical
@@ -181,12 +252,6 @@ def _append_guard_rejections(
     top_k: int = 5,
     max_rows: int = 100,
 ) -> pd.DataFrame:
-    """Audit real ANN candidates that the lexical guard rejects.
-
-    Candidates below the merge threshold are *not* merged; this diagnostic pass
-    simply demonstrates that semantically similar but lexically unsafe pairs are
-    explicitly rejected by the guard rather than silently ignored.
-    """
     try:
         import faiss
     except Exception:
@@ -258,133 +323,13 @@ def _guarded_build_resolution_map(*args: Any, **kwargs: Any):
 _impl.build_resolution_map = _guarded_build_resolution_map
 
 
-def _headers_from_exception(exc: Exception) -> Mapping[str, Any] | None:
-    response = getattr(exc, "response", None)
-    return getattr(response, "headers", None) if response is not None else None
-
-
-def _safe_groq_chat(
-    self,
-    *,
-    system: str,
-    user: str,
-    model: str | None = None,
-    max_tokens: int = 1200,
-    json_mode: bool = False,
-):
-    """Groq chat with GPT-OSS reasoning hidden and provider-aware backoff."""
-    last: Exception | None = None
-    chosen_model = model or self.fast_model
-    for attempt in range(self.config.groq_max_retries):
-        self._pace()
-        try:
-            kwargs: dict[str, Any] = {
-                "model": chosen_model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.0,
-                "max_completion_tokens": int(max_tokens),
-            }
-            if chosen_model.startswith("openai/gpt-oss"):
-                kwargs["reasoning_effort"] = "low"
-                kwargs["reasoning_format"] = "hidden"
-            if json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            response = self.client.chat.completions.create(**kwargs)
-            usage_obj = getattr(response, "usage", None)
-            usage = {
-                "prompt_tokens": getattr(usage_obj, "prompt_tokens", None),
-                "completion_tokens": getattr(usage_obj, "completion_tokens", None),
-                "total_tokens": getattr(usage_obj, "total_tokens", None),
-            }
-            return (response.choices[0].message.content or "").strip(), usage
-        except Exception as exc:
-            last = exc
-            if not self._is_retryable(exc) or attempt == self.config.groq_max_retries - 1:
-                raise
-            retry_after = parse_retry_after_seconds(_headers_from_exception(exc))
-            delay = self.policy.delay_for(attempt, retry_after_s=retry_after)
-            print(
-                f"[groq] retryable {type(exc).__name__}; "
-                f"attempt={attempt + 1}/{self.config.groq_max_retries}; sleep={delay:.1f}s"
-            )
-            time.sleep(delay)
-    raise RuntimeError(last or "Groq retry loop exhausted")
-
-
-_impl.GroqRuntime.chat = _safe_groq_chat
-
-
-def _openai_json_fallback(self, *, system: str, user: str, max_tokens: int = 1200, **_: Any):
-    key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("Groq JSON output was invalid and OPENAI_API_KEY fallback is unavailable")
-    from openai import OpenAI
-
-    model = os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
-    print(f"[llm] Groq JSON validation failed; repairing with OpenAI fallback model={model}")
-    client = OpenAI(api_key=key, timeout=60.0, max_retries=3)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=0.0,
-        response_format={"type": "json_object"},
-        max_tokens=int(max_tokens),
-    )
-    text = (response.choices[0].message.content or "").strip()
-    obj = _impl.GroqRuntime.parse_json(text)
-    if not valid_items_payload(obj):
-        raise ValueError("OpenAI JSON fallback returned malformed items envelope")
-    usage_obj = getattr(response, "usage", None)
-    usage = {
-        "prompt_tokens": getattr(usage_obj, "prompt_tokens", None),
-        "completion_tokens": getattr(usage_obj, "completion_tokens", None),
-        "total_tokens": getattr(usage_obj, "total_tokens", None),
-    }
-    return obj, usage
-
-
-def _resilient_chat_json(self, **kwargs: Any):
-    try:
-        text, usage = self.chat(json_mode=True, **kwargs)
-        obj = self.parse_json(text)
-        if not valid_items_payload(obj):
-            raise ValueError("Malformed items envelope")
-        return obj, usage
-    except Exception as exc:
-        message = str(exc).lower()
-        repairable = (
-            "json_validate_failed" in message
-            or "failed to generate json" in message
-            or "failed to validate json" in message
-            or "malformed items envelope" in message
-            or "no json object" in message
-        )
-        if not repairable:
-            raise
-        return _openai_json_fallback(self, **kwargs)
-
-
-_impl.GroqRuntime.chat_json = _resilient_chat_json
-
-
 def _resilient_extract_triples(
     source_df: pd.DataFrame,
     llm: Any,
     config: Any,
     output_dir: Path,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Extraction with retryable checkpoints and OpenAI rescue.
-
-    A failed batch is never written as an empty successful checkpoint. This is
-    essential for a long GitHub Actions full run: if the provider is unavailable,
-    a later run can resume and actually retry those chunks.
-    """
+    """Extraction with resumable checkpoints; failed batches are never marked done."""
     checkpoint = _impl.JsonlCheckpoint(output_dir / "checkpoints" / "extraction.jsonl", "chunk_id")
     completed = checkpoint.completed_keys()
     errors: list[dict[str, Any]] = []
@@ -411,35 +356,23 @@ def _resilient_extract_triples(
             "\"confidence\":0.0}]}]}. Include one items entry for EVERY input chunk, even when relations is empty. INPUT:\n"
             + json.dumps(payload, ensure_ascii=False)
         )
-        obj: dict[str, Any] | None = None
-        primary_error: Exception | None = None
         try:
             obj, _ = llm.chat_json(system=system, user=prompt, model=llm.fast_model, max_tokens=1800)
             if not valid_extraction_payload(obj, expected_ids):
                 raise ValueError("Malformed or incomplete extraction items envelope")
         except Exception as exc:
-            primary_error = exc
-            print(f"[extract] Groq batch needs rescue: {type(exc).__name__}: {exc}")
-            try:
-                obj, _ = _openai_json_fallback(llm, system=system, user=prompt, max_tokens=1800)
-                if not valid_extraction_payload(obj, expected_ids):
-                    raise ValueError("OpenAI rescue returned malformed or incomplete extraction items envelope")
-            except Exception as rescue_exc:
-                errors.append(
-                    {
-                        "start": int(start),
-                        "chunk_ids": json.dumps(sorted(expected_ids)),
-                        "provider": "groq+openai",
-                        "error": (
-                            f"primary={type(primary_error).__name__}: {primary_error}; "
-                            f"rescue={type(rescue_exc).__name__}: {rescue_exc}"
-                        ),
-                    }
-                )
-                print(f"[extract] batch remains incomplete and is NOT checkpointed: {rescue_exc}")
-                continue
+            errors.append(
+                {
+                    "start": int(start),
+                    "chunk_ids": json.dumps(sorted(expected_ids)),
+                    "provider": "openai",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            print(f"[extract] OpenAI batch incomplete and NOT checkpointed: {type(exc).__name__}: {exc}")
+            continue
 
-        by_id = {str(item.get("chunk_id")): item for item in (obj or {}).get("items", [])}
+        by_id = {str(item.get("chunk_id")): item for item in obj.get("items", [])}
         for r in batch.itertuples(index=False):
             checkpoint.upsert(by_id[str(r.chunk_id)])
 
@@ -499,47 +432,12 @@ def _resilient_extract_triples(
     error_df = ensure_extraction_error_schema(pd.DataFrame(errors))
     triples_df.to_csv(output_dir / "raw_triples.csv", index=False)
     error_df.to_csv(output_dir / "extraction_errors.csv", index=False)
-    print(f"[extract] valid triples={len(triples_df):,}; errors={len(error_df):,}")
+    print(f"[extract] valid triples={len(triples_df):,}; errors={len(error_df):,}; provider=openai")
     return triples_df, error_df
 
 
 _impl.extract_triples = _resilient_extract_triples
 
-
-_original_generate_answer = _impl.generate_answer
-
-
-def _openai_generate_answer(llm, question: str, context: str):
-    key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not key:
-        return _original_generate_answer(llm, question, context)
-    from openai import OpenAI
-
-    model = os.getenv("OPENAI_GENERATION_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
-    client = OpenAI(api_key=key, timeout=60.0, max_retries=3)
-    system = (
-        "Answer only from supplied context. Be concise but complete. Do not invent facts. "
-        "Cite provenance inline as [chunk_id=...] or [source_row=...] whenever possible. "
-        "If evidence is insufficient or conflicting, state that explicitly."
-    )
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": f"QUESTION:\n{question}\n\nCONTEXT:\n{context}\n\nANSWER:"},
-        ],
-        temperature=0.0,
-        max_tokens=900,
-    )
-    usage_obj = getattr(response, "usage", None)
-    usage = {
-        "prompt_tokens": getattr(usage_obj, "prompt_tokens", None),
-        "completion_tokens": getattr(usage_obj, "completion_tokens", None),
-        "total_tokens": getattr(usage_obj, "total_tokens", None),
-    }
-    return (response.choices[0].message.content or "").strip(), usage
-
-
-_impl.generate_answer = _openai_generate_answer
-
+# Re-export the patched instructor runtime. Because _impl.GroqRuntime was replaced
+# above, existing notebook code can keep its old imports while actually using OpenAI.
 from lab19_runtime_impl import *  # noqa: E402,F401,F403

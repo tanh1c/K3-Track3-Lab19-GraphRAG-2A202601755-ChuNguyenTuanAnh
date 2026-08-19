@@ -26,13 +26,13 @@ jobs:
       NEO4J_USER: ${{ vars.NEO4J_USER }}
       NEO4J_DATABASE: ${{ vars.NEO4J_DATABASE }}
       NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      GROQ_FAST_MODEL: openai/gpt-oss-20b
-      GROQ_GENERATION_MODEL: openai/gpt-oss-20b
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      JUDGE_PROVIDER: ${{ vars.JUDGE_PROVIDER }}
-      JUDGE_MODEL: ${{ vars.JUDGE_MODEL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LLM_PROVIDER: openai
+      OPENAI_PIPELINE_MODEL: gpt-4.1-mini
+      OPENAI_GENERATION_MODEL: gpt-4.1-mini
+      JUDGE_PROVIDER: openai
+      JUDGE_MODEL: ${{ vars.JUDGE_MODEL }}
       SOURCE_MAX_ROWS: '5000'
       PYTHONUNBUFFERED: '1'
 
@@ -73,14 +73,9 @@ jobs:
             });
             const existing = comments.data.find(c => c.body && c.body.includes(marker));
             if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                comment_id: existing.id, body,
-              });
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
             } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo, issue_number, body,
-              });
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number, body });
             }
 
       - uses: actions/setup-python@v5
@@ -104,9 +99,9 @@ jobs:
           path: |
             outputs/checkpoints
             outputs/graphrag_eval_checkpoint.csv
-          key: lab19-${{ steps.mode.outputs.mode }}-${{ github.run_id }}
+          key: lab19-openai-${{ steps.mode.outputs.mode }}-${{ github.run_id }}
           restore-keys: |
-            lab19-${{ steps.mode.outputs.mode }}-
+            lab19-openai-${{ steps.mode.outputs.mode }}-
 
       - name: Preflight external services
         if: steps.mode.outputs.mode == 'preflight'
@@ -176,6 +171,5 @@ jobs:
             if (!existing) return;
             const body = `${marker}\n### Lab19 Integration\n- Run ID: \`${context.runId}\`\n- Mode: \`${process.env.MODE}\`\n- Status: **${process.env.JOB_STATUS}**\n- Trigger SHA: \`${context.sha}\`\n- Artifact: \`lab19-${process.env.MODE}-${context.runNumber}\``;
             await github.rest.issues.updateComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              comment_id: existing.id, body,
+              owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body,
             });

@@ -10,20 +10,20 @@ from lab19_runtime import (
 )
 
 
-def test_actual_runtime_config_applies_groq_free_tier_guardrails():
+def test_actual_runtime_config_uses_openai_without_fixed_groq_sleep():
     smoke = RunConfig.for_mode("smoke")
     full = RunConfig.for_mode("full")
 
     assert smoke.extraction_max_chunks == 24
     assert smoke.groq_timeout_s >= 60.0
-    assert smoke.groq_min_interval_s >= 20.0
+    assert smoke.groq_min_interval_s <= 1.0
     assert smoke.coref_batch_size == 4
     assert smoke.extraction_batch_size == 4
 
     assert full.golden_limit == 50
     assert full.extraction_max_chunks == 400
     assert full.groq_timeout_s >= 60.0
-    assert full.groq_min_interval_s >= 20.0
+    assert full.groq_min_interval_s <= 1.0
 
 
 def test_empty_entity_resolution_audit_has_stable_csv_schema():
