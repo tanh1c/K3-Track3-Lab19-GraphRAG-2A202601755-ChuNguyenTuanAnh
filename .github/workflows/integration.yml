@@ -1,0 +1,86 @@
+name: Lab19 Integration
+
+on:
+  push:
+    branches:
+      - lab19/full-score-ci-bonus
+    paths:
+      - '.ci/run-integration'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab19-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      NEO4J_URI: ${{ vars.NEO4J_URI }}
+      NEO4J_USER: ${{ vars.NEO4J_USER }}
+      NEO4J_DATABASE: ${{ vars.NEO4J_DATABASE }}
+      NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+      GROQ_FAST_MODEL: llama-3.1-8b-instant
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      JUDGE_PROVIDER: ${{ vars.JUDGE_PROVIDER }}
+      JUDGE_MODEL: ${{ vars.JUDGE_MODEL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SOURCE_MAX_ROWS: '5000'
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install integration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Resolve requested mode
+        id: mode
+        shell: bash
+        run: |
+          if [ -f .ci/run-integration ]; then
+            MODE="$(tr -d '[:space:]' < .ci/run-integration)"
+          else
+            MODE="preflight"
+          fi
+          case "$MODE" in
+            preflight|smoke|full) ;;
+            *) echo "Unsupported integration mode: $MODE"; exit 2 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Integration mode: $MODE"
+
+      - name: Preflight external services
+        if: steps.mode.outputs.mode == 'preflight'
+        run: python scripts/preflight.py
+
+      - name: Smoke pipeline
+        if: steps.mode.outputs.mode == 'smoke'
+        run: python scripts/run_lab.py --mode smoke
+
+      - name: Full lab pipeline
+        if: steps.mode.outputs.mode == 'full'
+        run: python scripts/run_lab.py --mode full
+
+      - name: Upload integration artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab19-${{ steps.mode.outputs.mode }}-${{ github.run_number }}
+          path: |
+            outputs/
+            reports/
+          if-no-files-found: warn
+          retention-days: 14
