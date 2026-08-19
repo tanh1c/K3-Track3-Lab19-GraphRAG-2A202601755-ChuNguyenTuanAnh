@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import time
+from typing import Callable
 
 
 def required_env(name: str) -> str:
@@ -12,6 +13,25 @@ def required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def run_check(name: str, fn: Callable[[], dict]) -> tuple[dict, bool]:
+    print(f"[preflight] Checking {name}...")
+    t0 = time.perf_counter()
+    try:
+        result = dict(fn())
+        result.update({"ok": True, "latency_s": round(time.perf_counter() - t0, 3)})
+        print(f"[preflight] {name}: OK")
+        return result, True
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "latency_s": round(time.perf_counter() - t0, 3),
+        }
+        print(f"[preflight] {name}: FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return result, False
 
 
 def main() -> int:
@@ -23,53 +43,44 @@ def main() -> int:
         "secrets_printed": False,
     }
 
-    try:
-        neo4j_uri = required_env("NEO4J_URI")
-        neo4j_user = required_env("NEO4J_USER")
-        neo4j_password = required_env("NEO4J_PASSWORD")
-        neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j").strip() or "neo4j"
-        groq_key = required_env("GROQ_API_KEY")
-        hf_token = required_env("HF_TOKEN")
-        groq_fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant").strip()
-        judge_provider = os.getenv("JUDGE_PROVIDER", "openai").strip().lower()
-        judge_model = os.getenv("JUDGE_MODEL", "").strip()
-        if judge_provider == "openai":
-            required_env("OPENAI_API_KEY")
+    neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j").strip() or "neo4j"
+    groq_fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant").strip()
+    judge_provider = os.getenv("JUDGE_PROVIDER", "openai").strip().lower()
+    judge_model = os.getenv("JUDGE_MODEL", "").strip()
+    report["configuration"] = {
+        "neo4j_database": neo4j_database,
+        "groq_fast_model": groq_fast_model,
+        "judge_provider": judge_provider,
+        "judge_model": judge_model,
+        "source_policy": "FIRST_5000_ROWS_ONLY",
+    }
 
-        report["configuration"] = {
-            "neo4j_database": neo4j_database,
-            "groq_fast_model": groq_fast_model,
-            "judge_provider": judge_provider,
-            "judge_model": judge_model,
-            "source_policy": "FIRST_5000_ROWS_ONLY",
-        }
-
-        print("[preflight] Checking Neo4j connectivity...")
+    def check_neo4j() -> dict:
         from neo4j import GraphDatabase
 
-        t0 = time.perf_counter()
-        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
-        driver.verify_connectivity()
-        with driver.session(database=neo4j_database) as session:
-            value = session.run("RETURN 1 AS ok").single()["ok"]
-        driver.close()
-        if value != 1:
-            raise RuntimeError("Neo4j sanity query returned unexpected result")
-        report["checks"]["neo4j"] = {
-            "ok": True,
-            "latency_s": round(time.perf_counter() - t0, 3),
-        }
-        print("[preflight] Neo4j: OK")
+        uri = required_env("NEO4J_URI")
+        user = required_env("NEO4J_USER")
+        password = required_env("NEO4J_PASSWORD")
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        try:
+            driver.verify_connectivity()
+            with driver.session(database=neo4j_database) as session:
+                value = session.run("RETURN 1 AS ok").single()["ok"]
+            if value != 1:
+                raise RuntimeError("Neo4j sanity query returned unexpected result")
+            return {"database": neo4j_database}
+        finally:
+            driver.close()
 
-        print("[preflight] Checking Hugging Face streaming access...")
+    def check_huggingface() -> dict:
         from datasets import load_dataset
 
-        t0 = time.perf_counter()
+        token = required_env("HF_TOKEN")
         ds = load_dataset(
             "HackerNoon/tech-company-news-data-dump",
             split="train",
             streaming=True,
-            token=hf_token,
+            token=token,
         )
         iterator = iter(ds)
         first = next(iterator)
@@ -77,18 +88,12 @@ def main() -> int:
         columns = list(first.keys())
         if not columns or set(first.keys()) != set(second.keys()):
             raise RuntimeError("Hugging Face stream returned inconsistent schema")
-        report["checks"]["huggingface"] = {
-            "ok": True,
-            "columns": columns,
-            "latency_s": round(time.perf_counter() - t0, 3),
-        }
-        print(f"[preflight] Hugging Face: OK ({len(columns)} columns)")
+        return {"columns": columns}
 
-        print("[preflight] Checking Groq with a minimal request...")
+    def check_groq() -> dict:
         from groq import Groq
 
-        t0 = time.perf_counter()
-        client = Groq(api_key=groq_key, timeout=30.0, max_retries=0)
+        client = Groq(api_key=required_env("GROQ_API_KEY"), timeout=30.0, max_retries=0)
         response = client.chat.completions.create(
             model=groq_fast_model,
             messages=[
@@ -102,28 +107,40 @@ def main() -> int:
         if not text:
             raise RuntimeError("Groq returned an empty response")
         usage = getattr(response, "usage", None)
-        report["checks"]["groq"] = {
-            "ok": True,
+        return {
             "model": groq_fast_model,
-            "latency_s": round(time.perf_counter() - t0, 3),
             "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
         }
-        print("[preflight] Groq: OK")
 
-        report["ok"] = True
-        return 0
-    except Exception as exc:
-        report["ok"] = False
-        report["error_type"] = type(exc).__name__
-        report["error"] = str(exc)
-        print(f"[preflight] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
-    finally:
-        (out_dir / "preflight.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        print("[preflight] Sanitized report written to outputs/preflight.json")
+    def check_judge_configuration() -> dict:
+        if judge_provider == "openai":
+            required_env("OPENAI_API_KEY")
+        elif judge_provider == "groq":
+            required_env("GROQ_API_KEY")
+        else:
+            raise RuntimeError(f"Unsupported JUDGE_PROVIDER: {judge_provider}")
+        if not judge_model:
+            raise RuntimeError("JUDGE_MODEL is empty")
+        return {"provider": judge_provider, "model": judge_model, "credential_present": True}
+
+    overall = True
+    for key, label, fn in [
+        ("neo4j", "Neo4j connectivity", check_neo4j),
+        ("huggingface", "Hugging Face streaming access", check_huggingface),
+        ("groq", "Groq minimal request", check_groq),
+        ("judge", "Judge configuration", check_judge_configuration),
+    ]:
+        result, ok = run_check(label, fn)
+        report["checks"][key] = result
+        overall = overall and ok
+
+    report["ok"] = overall
+    (out_dir / "preflight.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print("[preflight] Sanitized report written to outputs/preflight.json")
+    return 0 if overall else 1
 
 
 if __name__ == "__main__":
