@@ -1,9 +1,9 @@
 name: Lab19 Integration
 
 on:
-  push:
+  pull_request:
     branches:
-      - lab19/full-score-ci-bonus
+      - main
     paths:
       - '.ci/run-integration'
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lab19-integration-${{ github.ref }}
+  group: lab19-integration-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           if [ -f .ci/run-integration ]; then
-            MODE="$(tr -d '[:space:]' < .ci/run-integration)"
+            MODE="$(head -n 1 .ci/run-integration | tr -d '[:space:]')"
           else
             MODE="preflight"
           fi
